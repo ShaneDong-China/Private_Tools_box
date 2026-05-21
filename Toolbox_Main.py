@@ -5,12 +5,15 @@
 import sys, os, json, importlib, logging
 from datetime import datetime
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget,
-    QListWidgetItem, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame)
-from PySide6.QtCore import QSize
+    QListWidgetItem, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
+    QDialog)
+from PySide6.QtCore import QSize, Qt
 
 PATH = os.path.dirname(__file__)
 TOOLS_CFG = os.path.join(PATH, "config", "tools.json")
 TOOL_ICONS = ["🕐", "👤", "🔐", "🛠", "⚙", "📊", "🔧", "💻", "🌐", "📁"]
+VIS_CFG = os.path.join(PATH, "config", "tool_visibility.json")
+ORDER_CFG = os.path.join(PATH, "config", "tool_order.json")
 tools = []
 tool_windows = []
 
@@ -22,8 +25,172 @@ def import_cls(mod_name, cls_name):
         return None
 
 
+def rebuild_tool_list(tl, tools, visible_map):
+    tl.clear()
+    for i, t in enumerate(tools):
+        if not visible_map.get(t["name"], True):
+            continue
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(0, 54))
+        item.setData(Qt.UserRole, i)
+        tl.addItem(item)
+        iw = QWidget()
+        iw.setStyleSheet("background:transparent;")
+        iwl = QHBoxLayout(iw)
+        iwl.setContentsMargins(20, 0, 20, 0)
+        iwl.setSpacing(14)
+        ilbl = QLabel(t.get("icon", "🔧"))
+        ilbl.setStyleSheet("font-size:22px;color:#dfe6e9;")
+        iwl.addWidget(ilbl)
+        nlbl = QLabel(t["name"])
+        nlbl.setStyleSheet("font-size:14px;color:#dfe6e9;")
+        iwl.addWidget(nlbl)
+        iwl.addStretch()
+        tl.setItemWidget(item, iw)
+
+
+def _rebuild_item_widgets(tl, tools):
+    for i in range(tl.count()):
+        item = tl.item(i)
+        idx = item.data(Qt.UserRole)
+        t = tools[idx]
+        iw = QWidget()
+        iw.setStyleSheet("background:transparent;")
+        iwl = QHBoxLayout(iw)
+        iwl.setContentsMargins(20, 0, 20, 0)
+        iwl.setSpacing(14)
+        ilbl = QLabel(t.get("icon", "🔧"))
+        ilbl.setStyleSheet("font-size:22px;color:#dfe6e9;")
+        iwl.addWidget(ilbl)
+        nlbl = QLabel(t["name"])
+        nlbl.setStyleSheet("font-size:14px;color:#dfe6e9;")
+        iwl.addWidget(nlbl)
+        iwl.addStretch()
+        tl.setItemWidget(item, iw)
+
+
+def _save_order(tools):
+    json.dump(
+        [t["name"] for t in tools],
+        open(ORDER_CFG, "w", encoding="utf-8"),
+        ensure_ascii=False, indent=2
+    )
+
+
+class ToolSettingsDialog(QDialog):
+    def __init__(self, all_tools, visible_map, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("栏位设置")
+        self.setFixedSize(380, 460)
+        self.setStyleSheet("QDialog{background:#f0f2f5;}")
+        self._all_tools = all_tools
+        self._visible_map = visible_map
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        hdr = QWidget()
+        hdr.setStyleSheet("background:#2d3436;")
+        hdr_layout = QHBoxLayout(hdr)
+        hdr_layout.setContentsMargins(16, 12, 16, 12)
+        hdr_label = QLabel("选择显示的工具")
+        hdr_label.setStyleSheet("color:white;font-size:15px;font-weight:bold;")
+        hdr_layout.addWidget(hdr_label)
+        hdr_layout.addStretch()
+        layout.addWidget(hdr)
+
+        btn_row = QWidget()
+        btn_row.setStyleSheet("background:#f0f2f5;")
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(16, 10, 16, 10)
+        select_all = QPushButton("全选")
+        deselect_all = QPushButton("取消全选")
+        for b in (select_all, deselect_all):
+            b.setStyleSheet(
+                "QPushButton{background:white;color:#2d3436;font-size:13px;"
+                "padding:6px 18px;border:1px solid #d0d0d0;border-radius:4px;}"
+                "QPushButton:hover{background:#e8e8e8;}"
+            )
+        btn_layout.addWidget(select_all)
+        btn_layout.addWidget(deselect_all)
+        btn_layout.addStretch()
+        layout.addWidget(btn_row)
+
+        self._list = QListWidget()
+        self._list.setDragDropMode(QListWidget.InternalMove)
+        self._list.setDefaultDropAction(Qt.MoveAction)
+        self._list.setStyleSheet(
+            "QListWidget{background:white;border:none;font-size:14px;}"
+            "QListWidget::item{color:#2d3436;padding:6px 16px;}"
+            "QListWidget::item:hover{background:#f0f2f5;color:#0984e3;}"
+            "QListWidget::item:selected{background:#e8f0fe;}"
+            "QScrollBar:vertical{width:8px;}"
+            "QScrollBar::handle:vertical{background:#b0b0b0;border-radius:4px;}"
+        )
+
+        for t in self._all_tools:
+            text = f'{t.get("icon", "🔧")}  {t["name"]}'
+            item = QListWidgetItem(text)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if self._visible_map.get(t["name"], True) else Qt.Unchecked)
+            self._list.addItem(item)
+
+        layout.addWidget(self._list, 1)
+
+        bottom = QWidget()
+        bottom.setStyleSheet("background:#f0f2f5;")
+        bottom_layout = QHBoxLayout(bottom)
+        bottom_layout.setContentsMargins(16, 12, 16, 12)
+        ok_btn = QPushButton("确定")
+        cancel_btn = QPushButton("取消")
+        ok_btn.setStyleSheet(
+            "QPushButton{background:#0984e3;color:white;font-size:14px;font-weight:bold;"
+            "padding:8px 32px;border:none;border-radius:6px;}"
+            "QPushButton:hover{background:#0873c4;}"
+        )
+        cancel_btn.setStyleSheet(
+            "QPushButton{background:white;color:#2d3436;font-size:14px;"
+            "padding:8px 24px;border:1px solid #d0d0d0;border-radius:6px;}"
+            "QPushButton:hover{background:#f5f5f5;}"
+        )
+        bottom_layout.addStretch()
+        bottom_layout.addWidget(ok_btn)
+        bottom_layout.addSpacing(10)
+        bottom_layout.addWidget(cancel_btn)
+        layout.addWidget(bottom)
+
+        def set_all(checked):
+            for i in range(self._list.count()):
+                self._list.item(i).setCheckState(Qt.Checked if checked else Qt.Unchecked)
+
+        select_all.clicked.connect(lambda: set_all(True))
+        deselect_all.clicked.connect(lambda: set_all(False))
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+
+    def get_visible_map(self):
+        result = {}
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            name = item.text().split("  ", 1)[1]
+            result[name] = item.checkState() == Qt.Checked
+        return result
+
+    def get_tool_order(self):
+        order = []
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            name = item.text().split("  ", 1)[1]
+            order.append(name)
+        return order
+
+
 if __name__ == "__main__":
     cfgs = json.load(open(TOOLS_CFG, encoding="utf-8"))["tools"]
+    visible_map = json.load(open(VIS_CFG, encoding="utf-8")) if os.path.exists(VIS_CFG) else {}
 
     logger = logging.getLogger("toolbox")
     log_dir = os.path.join(PATH, "logs")
@@ -63,6 +230,14 @@ if __name__ == "__main__":
     tt.setStyleSheet("color:white;font-size:18px;font-weight:bold;")
     tll.addWidget(tt)
     tll.addStretch()
+    settings_btn = QPushButton("⚙")
+    settings_btn.setFixedSize(36, 36)
+    settings_btn.setStyleSheet(
+        "QPushButton{background:#3d4447;color:white;font-size:18px;"
+        "border:none;border-radius:18px;}"
+        "QPushButton:hover{background:#50575a;}"
+    )
+    tll.addWidget(settings_btn)
     ml.addWidget(tb)
 
     # 主体
@@ -82,26 +257,22 @@ if __name__ == "__main__":
         "QListWidget::item:hover{background:#353b3e;border-left:3px solid #74b9ff;}"
         "QListWidget::item:selected{background:#3d4447;border-left:3px solid #0984e3;color:white;}"
     )
+    tl.setDragDropMode(QListWidget.InternalMove)
+    tl.setDefaultDropAction(Qt.MoveAction)
 
     for i, c in enumerate(cfgs):
         icon = c.get("icon", TOOL_ICONS[i % len(TOOL_ICONS)])
         tools.append({**c, "icon": icon})
-        item = QListWidgetItem()
-        item.setSizeHint(QSize(0, 54))
-        tl.addItem(item)
-        iw = QWidget()
-        iw.setStyleSheet("background:transparent;")
-        iwl = QHBoxLayout(iw)
-        iwl.setContentsMargins(20, 0, 20, 0)
-        iwl.setSpacing(14)
-        ilbl = QLabel(icon)
-        ilbl.setStyleSheet("font-size:22px;color:#dfe6e9;")
-        iwl.addWidget(ilbl)
-        nlbl = QLabel(c["name"])
-        nlbl.setStyleSheet("font-size:14px;color:#dfe6e9;")
-        iwl.addWidget(nlbl)
-        iwl.addStretch()
-        tl.setItemWidget(item, iw)
+    order_list = json.load(open(ORDER_CFG, encoding="utf-8")) if os.path.exists(ORDER_CFG) else None
+    if order_list:
+        name_to_tool = {t["name"]: t for t in tools}
+        reordered = [name_to_tool[n] for n in order_list if n in name_to_tool]
+        existing = {t["name"] for t in reordered}
+        for t in tools:
+            if t["name"] not in existing:
+                reordered.append(t)
+        tools[:] = reordered
+    rebuild_tool_list(tl, tools, visible_map)
 
     tl.setCurrentRow(-1)
     bl.addWidget(tl)
@@ -161,8 +332,8 @@ if __name__ == "__main__":
             dd.setText("请从左侧列表选择一个工具，查看详情并启动")
             lb.setEnabled(False)
             return
-        row = tl.row(cur)
-        if row < 0 or row >= len(tools):
+        row = cur.data(Qt.UserRole)
+        if row is None or row < 0 or row >= len(tools):
             return
         t = tools[row]
         di.setText(t["icon"])
@@ -174,7 +345,10 @@ if __name__ == "__main__":
         item = tl.currentItem()
         if item is None:
             return
-        t = tools[tl.currentRow()]
+        row = item.data(Qt.UserRole)
+        if row is None or row < 0 or row >= len(tools):
+            return
+        t = tools[row]
         if not t.get("module") or not t.get("class"):
             logger.warning(f"工具配置不完整: {t['name']}")
             return
@@ -192,6 +366,37 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"工具启动失败: {e}")
 
+    def open_settings():
+        dlg = ToolSettingsDialog(tools, visible_map, w)
+        if dlg.exec():
+            new_map = dlg.get_visible_map()
+            new_order = dlg.get_tool_order()
+            visible_map.clear()
+            visible_map.update(new_map)
+            name_to_tool = {t["name"]: t for t in tools}
+            tools[:] = [name_to_tool[n] for n in new_order if n in name_to_tool]
+            json.dump(visible_map, open(VIS_CFG, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+            _save_order(tools)
+            rebuild_tool_list(tl, tools, visible_map)
+
+    def on_tools_reordered():
+        new_visible = []
+        for i in range(tl.count()):
+            idx = tl.item(i).data(Qt.UserRole)
+            new_visible.append(tools[idx])
+        hidden = [t for t in tools if not visible_map.get(t["name"], True)]
+        tools[:] = new_visible + hidden
+        for i in range(tl.count()):
+            tl.item(i).setData(Qt.UserRole, i)
+        _rebuild_item_widgets(tl, tools)
+        _save_order(tools)
+
+    settings_btn.clicked.connect(open_settings)
+    tl.model().rowsMoved.connect(lambda *a: on_tools_reordered())
+    tl.model().rowsInserted.connect(
+        lambda *a: on_tools_reordered(),
+        Qt.QueuedConnection
+    )
     tl.currentItemChanged.connect(on_sel)
     tl.itemDoubleClicked.connect(do_launch)
     lb.clicked.connect(do_launch)
