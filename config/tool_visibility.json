@@ -2,12 +2,13 @@
   "远程抓包": true,
   "IMS网元升级": true,
   "Docker自动化": true,
-  "批量配置NTP": true,
   "网段Ping扫描器": true,
-  "SSH端口配置": false,
-  "批量用户管理": false,
-  "安全基线检查": false,
-  "密码生成器": false,
-  "SSH登录测试": false,
-  "获取用户列表": false
+  "批量配置NTP": true,
+  "SSH端口配置": true,
+  "批量用户管理": true,
+  "安全基线检查": true,
+  "密码生成器": true,
+  "SSH登录测试": true,
+  "获取用户列表": true,
+  "服务器初始化": true
 }

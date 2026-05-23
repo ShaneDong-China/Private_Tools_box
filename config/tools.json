@@ -76,6 +76,13 @@
       "module": "IMS_NE_Upgrade_sub",
       "class": "IMSEUpgradeTool",
       "icon": "🔄"
+    },
+	{
+      "name": "服务器初始化",
+      "description": "服务器初始化",
+      "module": "Linux_Base_Config_sub",
+      "class": "LinuxBaseConfig",
+      "icon": "🐳"
     }
   ]
 }
