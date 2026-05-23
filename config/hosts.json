@@ -74,6 +74,22 @@
     "user": "root"
   },
   {
+    "desc": "BOG-CCF01",
+    "host": "10.10.30.59",
+    "name": "BOG-CCF01",
+    "port": 22,
+    "pwd": "Genew@123",
+    "user": "root"
+  },
+  {
+    "desc": "BOG-CCF02",
+    "host": "10.10.30.60",
+    "name": "BOG-CCF02",
+    "port": 22,
+    "pwd": "Genew@123",
+    "user": "root"
+  },
+  {
     "desc": "BOG-SBCM01",
     "host": "10.10.30.64",
     "name": "BOG-SBCM01",

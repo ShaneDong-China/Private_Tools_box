@@ -110,5 +110,19 @@
     "user": "root",
     "pwd": "Genew@123",
     "desc": "MOK-CDR-server01"
+  },
+  {
+    "host": "10.10.30.59",
+    "port": 22,
+    "user": "root",
+    "pwd": "Genew@123",
+    "desc": "BOG-CCF01"
+  },
+  {
+    "host": "10.10.30.60",
+    "port": 22,
+    "user": "root",
+    "pwd": "Genew@123",
+    "desc": "BOG-CCF02"
   }
 ]

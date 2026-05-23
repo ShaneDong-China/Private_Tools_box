@@ -437,21 +437,32 @@ class SBCMCaptureWorker(QThread):
             self._send_cmd(chan, "\n", "enter para4")
 
             self.log.emit("[SBCM] Capture started")
+            self._capture_start = time.time()
+            last_keepalive = time.time()
 
-            if self.duration is not None:
-                for i in range(self.duration):
+            while True:
+                if self.duration is not None:
+                    elapsed = int(time.time() - self._capture_start)
+                    if elapsed >= self.duration:
+                        break
+                    self.progress.emit(int(elapsed * 100 / self.duration))
+                else:
+                    self.progress.emit(50)
                     if self._stop_requested:
                         break
-                    time.sleep(1)
-                    self.progress.emit(int((i + 1) * 100 / self.duration))
-                    if chan.recv_ready():
-                        chan.recv(4096)
-            else:
-                self.progress.emit(50)
-                while not self._stop_requested:
-                    time.sleep(0.5)
-                    if chan.recv_ready():
-                        chan.recv(4096)
+
+                if not chan.active:
+                    raise RuntimeError("SSH channel closed during capture wait")
+
+                if chan.recv_ready():
+                    chan.recv(4096)
+
+                if time.time() - last_keepalive >= 30:
+                    chan.send("\n")
+                    last_keepalive = time.time()
+                    self.log.emit("[SBCM] keepalive sent")
+
+                time.sleep(1)
 
             self._send_cmd(chan, "debug dp 0x912\n")
 
@@ -1133,7 +1144,7 @@ class TcpdumpCapture(QWidget):
 
         proto = QComboBox()
         proto.addItems(["any", "tcp", "udp", "icmp", "arp", "sip", "SBCM"])
-        proto.setFixedWidth(70)
+        proto.setFixedWidth(90)
         if data:
             idx = proto.findText(data['proto'])
             if idx >= 0: proto.setCurrentIndex(idx)
