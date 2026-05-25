@@ -57,6 +57,13 @@
       "icon": "🌐"
     },
     {
+      "name": "IMS工具",
+      "description": "IMS 综合工具：抓包(SBCM/tcpdump) + 网元升级 + 日志查看",
+      "module": "IMS_Tool_sub",
+      "class": "IMSTool",
+      "icon": "📦"
+    },
+    {
       "name": "远程抓包",
       "description": "远程tcpdump抓包，支持定时/手动模式，协议/IP/端口过滤，自动压缩下载",
       "module": "Tcpdump_Capture_sub",
