@@ -8,7 +8,7 @@ from scp import SCPClient
 from PySide6.QtWidgets import (QWidget, QApplication, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QTextEdit, QFileDialog,
     QMessageBox, QGroupBox, QComboBox, QFormLayout, QFrame, QProgressBar,
-    QInputDialog, QCompleter, QDialog, QListWidget)
+    QInputDialog, QCompleter, QDialog, QListWidget, QListWidgetItem)
 from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent
 from PySide6.QtGui import QFont
 
@@ -321,13 +321,287 @@ class CaptureStopWorker(QThread):
             self.error.emit(str(e))
 
 
+class KillWorker(QThread):
+    def __init__(self, host, port, user, pwd, out_names):
+        super().__init__()
+        self.host = host
+        self.port = int(port)
+        self.user = user
+        self.pwd = pwd
+        self.out_names = out_names
+
+    def run(self):
+        try:
+            c = paramiko.SSHClient()
+            c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            c.connect(self.host, self.port, self.user, self.pwd, timeout=5)
+            for name in self.out_names:
+                c.exec_command(f"ps aux | grep 'tcpdump.*{name}' | grep -v grep | awk '{{print $2}}' | xargs -r kill 2>/dev/null")
+            c.exec_command("pgrep -f 'tcpdump -i any -w /opt/tar/' | xargs -r kill 2>/dev/null; sleep 1")
+            c.close()
+        except:
+            pass
+
+
+class SBCMCaptureWorker(QThread):
+    log = Signal(str)
+    progress = Signal(int)
+    done = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, host, port, user, pwd, local_path, duration=None):
+        super().__init__()
+        self.host = host
+        self.port = int(port)
+        self.user = user
+        self.pwd = pwd
+        self.local_path = local_path
+        self.duration = int(duration) if duration is not None else None
+        self._stop_requested = False
+        self._chan = None
+        self._ssh = None
+
+    def request_stop(self):
+        self._stop_requested = True
+
+    def _recv_all(self, chan):
+        data = b""
+        while chan.recv_ready():
+            chunk = chan.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        if data:
+            self.log.emit(f"[SBCM] [recv] {data.decode('utf-8', errors='replace')[-500:]}")
+        return data
+
+    def _expect(self, chan, expected, timeout=30):
+        data = b""
+        start = time.time()
+        while time.time() - start < timeout:
+            if chan.recv_ready():
+                chunk = chan.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                txt = data.decode("utf-8", errors="replace")
+                if expected in txt:
+                    self.log.emit(f"[SBCM] [expect] '{expected}' matched, recv={txt[-200:]}")
+                    return txt
+            elif chan.exit_status_ready():
+                break
+            else:
+                time.sleep(0.1)
+        txt = data.decode("utf-8", errors="replace")
+        self.log.emit(f"[SBCM] [expect] '{expected}' timeout, recv={txt[-500:]}")
+        if expected not in txt:
+            raise TimeoutError(f"Expected '{expected}' not found. Got: {txt[-500:]}")
+        return txt
+
+    def _send_cmd(self, chan, text, label=None):
+        label = label or text.rstrip("\n")
+        self.log.emit(f"[SBCM] [send] {label}")
+        chan.send(text)
+
+    def _telnet_and_diagnose(self, chan):
+        self._recv_all(chan)
+        self._send_cmd(chan, "telnet 127.0.0.1\n")
+        self._expect(chan, "[USERNAME]:")
+        self._send_cmd(chan, "admin\n", "admin (username)")
+        self._expect(chan, "[PASSWORD]:")
+        self._send_cmd(chan, "admin\n", "admin (password)")
+        self._expect(chan, "NuBiz>>")
+        self._send_cmd(chan, "cm diagnose\n")
+        self._expect(chan, "NuBiz$$")
+
+    def _stop_capture(self, chan):
+        self._send_cmd(chan, "debug dp 0x912\n")
+        self._expect(chan, "<para1>")
+        self._send_cmd(chan, "\n", "enter para1")
+        self._expect(chan, "<para2>")
+        self._send_cmd(chan, "\n", "enter para2")
+        self._expect(chan, "<para3>")
+        self._send_cmd(chan, "\n", "enter para3")
+        self._expect(chan, "<para4>")
+        self._send_cmd(chan, "\n", "enter para4")
+        self._expect(chan, "End of Packet Capture", timeout=120)
+
+    def run(self):
+        try:
+            self.log.emit(f"[SBCM] Connecting {self.host}:{self.port}")
+            c = paramiko.SSHClient()
+            c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            c.connect(self.host, self.port, self.user, self.pwd, timeout=10)
+            self._ssh = c
+
+            chan = c.invoke_shell()
+            chan.settimeout(30)
+            self._chan = chan
+            time.sleep(1)
+            self._recv_all(chan)
+
+            self._telnet_and_diagnose(chan)
+            self._send_cmd(chan, "debug dp 0x911\n")
+
+            self._expect(chan, "<para1>")
+            self._send_cmd(chan, "\n", "enter para1")
+            self._expect(chan, "<para2>")
+            self._send_cmd(chan, "\n", "enter para2")
+            self._expect(chan, "<para3>")
+            self._send_cmd(chan, "\n", "enter para3")
+            self._expect(chan, "<para4>")
+            self._send_cmd(chan, "\n", "enter para4")
+
+            self.log.emit("[SBCM] Capture started")
+            self._capture_start = time.time()
+            last_keepalive = time.time()
+
+            while True:
+                if self.duration is not None:
+                    elapsed = int(time.time() - self._capture_start)
+                    if elapsed >= self.duration:
+                        break
+                    self.progress.emit(int(elapsed * 100 / self.duration))
+                else:
+                    self.progress.emit(50)
+                    if self._stop_requested:
+                        break
+
+                if not chan.active:
+                    raise RuntimeError("SSH channel closed during capture wait")
+
+                if chan.recv_ready():
+                    chan.recv(4096)
+
+                if time.time() - last_keepalive >= 30:
+                    chan.send("\n")
+                    last_keepalive = time.time()
+                    self.log.emit("[SBCM] keepalive sent")
+
+                time.sleep(1)
+
+            for attempt in range(2):
+                try:
+                    self._stop_capture(chan)
+                    break
+                except Exception:
+                    if attempt == 0:
+                        self.log.emit("[SBCM] Session lost, re-telnet to stop capture...")
+                        self._telnet_and_diagnose(chan)
+                    else:
+                        raise
+
+            self.log.emit("[SBCM] Capture stopped, waiting for flush...")
+            time.sleep(3)
+
+            self._send_cmd(chan, "exit\n")
+            self._expect(chan, "Y/N")
+            self._send_cmd(chan, "Y\n", "exit confirm Y")
+            time.sleep(2)
+            self._recv_all(chan)
+            chan.close()
+            c.close()
+
+            self.log.emit("[SBCM] Locating pdump folder")
+            c2 = paramiko.SSHClient()
+            c2.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            c2.connect(self.host, self.port, self.user, self.pwd, timeout=10)
+
+            transport = c2.get_transport()
+
+            remote_folder = ""
+            for retry in range(10):
+                session = transport.open_session()
+                session.exec_command("ls -td /mnt/hfs1/PROGRAM/pdump/pdump* 2>/dev/null | head -1")
+                out = session.makefile("rb", -1).read()
+                session.close()
+                remote_folder = out.decode("utf-8", errors="replace").strip()
+                self.log.emit(f"[SBCM] ls attempt {retry+1}: '{remote_folder}'")
+                if remote_folder:
+                    session_chk = transport.open_session()
+                    session_chk.exec_command(f"ls -A {remote_folder} 2>/dev/null | head -5")
+                    out_chk = session_chk.makefile("rb", -1).read().decode("utf-8", errors="replace").strip()
+                    session_chk.close()
+                    if out_chk:
+                        self.log.emit(f"[SBCM] Folder has content: {out_chk}")
+                        break
+                    self.log.emit("[SBCM] Folder empty, waiting...")
+                time.sleep(2)
+            if not remote_folder:
+                raise RuntimeError("SBCM: pdump folder not found on remote host!")
+
+            folder_name = remote_folder.rstrip("/").split("/")[-1]
+            remote_tar = f"/opt/tar/{folder_name}.tar.gz"
+
+            self.log.emit(f"[SBCM] Packing {remote_folder}")
+            session2 = transport.open_session()
+            session2.exec_command(f"tar czf {remote_tar} -C /mnt/hfs1/PROGRAM/pdump {folder_name} && stat --format=%s {remote_tar}")
+            out2 = session2.makefile("rb", -1).read().decode("utf-8", errors="replace").strip()
+            session2.close()
+            if not out2 or out2 == "0":
+                raise RuntimeError(f"SBCM: packed file is empty! ({remote_tar})")
+            self.log.emit(f"[SBCM] Packed size: {out2} bytes")
+
+            local_path = self.local_path + ".tar.gz"
+            self.log.emit(f"[SBCM] Downloading {remote_tar} -> {local_path}")
+            SCPClient(c2.get_transport()).get(remote_tar, local_path)
+
+            session3 = transport.open_session()
+            session3.exec_command(f"rm -f {remote_tar}")
+            session3.close()
+            c2.close()
+
+            self.progress.emit(100)
+            self.log.emit(f"[done] {local_path}")
+            self.done.emit(local_path)
+
+        except Exception as e:
+            emsg = str(e)
+            self.log.emit(f"[error] {emsg}")
+            self.error.emit(emsg)
+            logger.exception("SBCMCaptureWorker error")
+        finally:
+            if self._chan:
+                try: self._chan.close()
+                except: pass
+            if self._ssh:
+                try: self._ssh.close()
+                except: pass
+
+
 class TcpdumpCapture(QWidget):
     def __init__(self):
         super().__init__()
         self._hosts = _load_hosts()
         self._capturing = False
         self._timer_workers = []
+        self._active_remote_paths = []
         self._init_ui()
+
+    def closeEvent(self, event):
+        self._emergency_cleanup()
+        event.accept()
+
+    def _emergency_cleanup(self):
+        for w in getattr(self, '_timer_workers', []) or []:
+            if isinstance(w, SBCMCaptureWorker):
+                w.request_stop()
+            elif w.isRunning():
+                w.terminate()
+        for w in getattr(self, '_manual_workers', []) or []:
+            if isinstance(w, SBCMCaptureWorker):
+                w.request_stop()
+            elif w.isRunning():
+                w.terminate()
+        for w in getattr(self, '_stop_workers', []) or []:
+            if w.isRunning(): w.terminate()
+        if self._active_remote_paths:
+            by_host = {}
+            for key, rpath in self._active_remote_paths:
+                by_host.setdefault(key, []).append(rpath)
+            for (host, port, user, pwd), paths in by_host.items():
+                names = [p.split("/")[-1] for p in paths]
+                KillWorker(host, port, user, pwd, names).start()
 
     def _card(self, title, content_widget):
         wrapper = QFrame()
@@ -389,7 +663,7 @@ class TcpdumpCapture(QWidget):
         path_row.setSpacing(6)
         self.save_path = QLineEdit()
         self.save_path.setPlaceholderText("Save Path")
-        self.save_path.setText(r"F:\BaiduNetdiskDownload\Bangladesh\ICX_BTCL\ANS")
+        self.save_path.setText(os.path.join(os.path.expanduser("~"), "Desktop"))
         path_row.addWidget(self.save_path)
         browse_btn = self._secondary_btn("Browse")
         browse_btn.clicked.connect(self._on_browse)
@@ -460,7 +734,7 @@ class TcpdumpCapture(QWidget):
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setFont(QFont("Menlo", 10) if "Menlo" in QFont().families() else QFont("Consolas", 10))
-        self.log_box.setFixedHeight(150)
+        self.log_box.setMinimumHeight(80)
         self.log_box.setStyleSheet(
             "QTextEdit{background:#fafafa;border:1px solid #e0e0e0;border-radius:8px;"
             "padding:8px;font-size:11px;color:#1a1a1a;}")
@@ -471,7 +745,7 @@ class TcpdumpCapture(QWidget):
         log_v = QVBoxLayout(log_container)
         log_v.setContentsMargins(12, 10, 12, 12)
         log_v.addWidget(self.log_box)
-        layout.addWidget(log_container)
+        layout.addWidget(log_container, 1)
 
         self._on_mode_changed(self.mode_cb.currentIndex())
         self._update_preview()
@@ -501,10 +775,15 @@ class TcpdumpCapture(QWidget):
             h = self._hosts[idx]
             filters = self._get_host_filters(row)
             ts = datetime.now().strftime('%Y%m%d_%H%M')
-            for fi, f in enumerate(filters):
-                filter_expr = self._build_filter_expr(f)
-                out_name = f"{h.get('name','capture')}_f{fi+1}_{f['proto']}_{ts}.pcap"
-                tasks.append((h, filter_expr, out_name))
+            is_sbcm = any(f['proto'] == 'SBCM' for f in filters)
+            if is_sbcm:
+                out_name = f"{h.get('name','capture')}_sbcm_{ts}"
+                tasks.append(('sbcm', h, None, out_name))
+            else:
+                for fi, f in enumerate(filters):
+                    filter_expr = self._build_filter_expr(f)
+                    out_name = f"{h.get('name','capture')}_f{fi+1}_{f['proto']}_{ts}.pcap"
+                    tasks.append(('tcpdump', h, filter_expr, out_name))
         if not tasks:
             QMessageBox.warning(self, "Warning", "No host selected")
             return
@@ -532,15 +811,20 @@ class TcpdumpCapture(QWidget):
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
 
-        for ti, (h, filter_expr, out_name) in enumerate(tasks):
-            remote_path = f"/opt/tar/{out_name}"
+        for ti, (task_type, h, expr_or_f, out_name) in enumerate(tasks):
             local_path = os.path.join(save_dir, out_name)
-            cmd = f"tcpdump -i any -w {remote_path} {filter_expr}"
-            self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [timed] {h['host']}:{h.get('port',22)} → {out_name}")
-            self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [command] {cmd}")
-
-            w = CaptureWorker(h["host"], h.get("port", 22), h["user"], h.get("pwd", ""),
-                              cmd, remote_path, local_path, duration, self.compress_cb.isChecked())
+            if task_type == 'sbcm':
+                self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [timed] SBCM {h['host']}:{h.get('port',22)} → {out_name}")
+                w = SBCMCaptureWorker(h["host"], h.get("port", 22), h["user"], h.get("pwd", ""),
+                                      local_path, duration=int(duration))
+            else:
+                remote_path = f"/opt/tar/{out_name}"
+                self._active_remote_paths.append(((h['host'], h.get('port',22), h['user'], h.get('pwd','')), remote_path))
+                cmd = f"tcpdump -i any -w {remote_path} {expr_or_f}"
+                self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [timed] {h['host']}:{h.get('port',22)} → {out_name}")
+                self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [command] {cmd}")
+                w = CaptureWorker(h["host"], h.get("port", 22), h["user"], h.get("pwd", ""),
+                                  cmd, remote_path, local_path, duration, self.compress_cb.isChecked())
             w.log.connect(self._on_log)
             w.progress.connect(lambda v, orig=ti: self._on_multi_progress(orig, v))
             w.done.connect(self._on_multi_done)
@@ -569,7 +853,8 @@ class TcpdumpCapture(QWidget):
         self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [error] {msg}")
 
     def _on_multi_finished(self):
-        if self._capture_done + self._capture_errors >= self._capture_counts:
+        if self._capture_done + self._capture_errors >= self._capture_counts and not getattr(self, '_multi_completed', False):
+            self._multi_completed = True
             self._capturing = False
             self.mode_cb.setEnabled(True)
             self.progress_bar.setVisible(False)
@@ -635,10 +920,15 @@ class TcpdumpCapture(QWidget):
             h = self._hosts[idx]
             filters = self._get_host_filters(row)
             ts = datetime.now().strftime('%Y%m%d_%H%M')
-            for fi, f in enumerate(filters):
-                filter_expr = self._build_filter_expr(f)
-                out_name = f"{h.get('name','capture')}_f{fi+1}_{f['proto']}_{ts}.pcap"
-                tasks.append((h, filter_expr, out_name))
+            is_sbcm = any(f['proto'] == 'SBCM' for f in filters)
+            if is_sbcm:
+                out_name = f"{h.get('name','capture')}_sbcm_{ts}"
+                tasks.append(('sbcm', h, None, out_name))
+            else:
+                for fi, f in enumerate(filters):
+                    filter_expr = self._build_filter_expr(f)
+                    out_name = f"{h.get('name','capture')}_f{fi+1}_{f['proto']}_{ts}.pcap"
+                    tasks.append(('tcpdump', h, filter_expr, out_name))
         if not tasks:
             QMessageBox.warning(self, "Warning", "No host selected")
             return
@@ -655,23 +945,32 @@ class TcpdumpCapture(QWidget):
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
 
-        for h, filter_expr, out_name in tasks:
-            remote_path = f"/opt/tar/{out_name}"
+        for task_type, h, expr_or_f, out_name in tasks:
             local_path = os.path.join(save_dir, out_name)
-            cmd = f"tcpdump -i any -w {remote_path} {filter_expr}"
-            self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [manual] Start {h['host']}:{h.get('port',22)} → {out_name}")
-            self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [command] {cmd}")
-
-            w = CaptureStartWorker(h["host"], h.get("port", 22), h["user"], h.get("pwd", ""), cmd)
-            w._out_name = out_name
-            w._remote_path = remote_path
-            w._local_path = local_path
-            w._hostname = h['host']
-            w.started.connect(self._on_manual_started)
-            w.error.connect(self._on_manual_error)
-            w.finished.connect(lambda: None)
-            w.start()
+            if task_type == 'sbcm':
+                self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [manual] SBCM {h['host']}:{h.get('port',22)} → {out_name}")
+                w = SBCMCaptureWorker(h["host"], h.get("port", 22), h["user"], h.get("pwd", ""),
+                                      local_path, duration=None)
+                w.log.connect(self._on_log)
+                w.done.connect(self._on_manual_stopped)
+                w.error.connect(self._on_manual_error)
+                w.start()
+            else:
+                remote_path = f"/opt/tar/{out_name}"
+                self._active_remote_paths.append(((h['host'], h.get('port',22), h['user'], h.get('pwd','')), remote_path))
+                cmd = f"tcpdump -i any -w {remote_path} {expr_or_f}"
+                self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [manual] Start {h['host']}:{h.get('port',22)} → {out_name}")
+                self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [command] {cmd}")
+                w = CaptureStartWorker(h["host"], h.get("port", 22), h["user"], h.get("pwd", ""), cmd)
+                w._out_name = out_name
+                w._remote_path = remote_path
+                w._local_path = local_path
+                w._hostname = h['host']
+                w.started.connect(self._on_manual_started)
+                w.error.connect(self._on_manual_error)
+                w.finished.connect(lambda: None)
             self._manual_workers.append(w)
+            w.start()
 
     def _on_manual_started(self):
         self._manual_started_count += 1
@@ -690,24 +989,32 @@ class TcpdumpCapture(QWidget):
             return
         self.stop_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
+
         self._stop_workers = []
         self._stop_done = 0
         self._stop_errors = 0
         self._stop_results = []
 
         for w in self._manual_workers:
-            h_name = getattr(w, '_hostname', '')
-            self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [manual] Stop & download {h_name}")
+            if isinstance(w, SBCMCaptureWorker):
+                self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [manual] Stopping SBCM capture")
+                w.error.connect(self._on_manual_stop_error)
+                w.finished.connect(self._on_stop_finished)
+                w.request_stop()
+                self._stop_workers.append(w)
+            else:
+                h_name = getattr(w, '_hostname', '')
+                self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [manual] Stop & download {h_name}")
 
-            sw = CaptureStopWorker(
-                w.host, w.port, w.user, w.pwd,
-                w._remote_path, w._local_path, self.compress_cb.isChecked())
-            sw.log.connect(self._on_log)
-            sw.done.connect(self._on_manual_stopped)
-            sw.error.connect(self._on_manual_stop_error)
-            sw.finished.connect(self._on_stop_finished)
-            sw.start()
-            self._stop_workers.append(sw)
+                sw = CaptureStopWorker(
+                    w.host, w.port, w.user, w.pwd,
+                    w._remote_path, w._local_path, self.compress_cb.isChecked())
+                sw.log.connect(self._on_log)
+                sw.done.connect(self._on_manual_stopped)
+                sw.error.connect(self._on_manual_stop_error)
+                sw.finished.connect(self._on_stop_finished)
+                sw.start()
+                self._stop_workers.append(sw)
 
     def _on_manual_stopped(self, local_path):
         self._stop_done += 1
@@ -719,7 +1026,8 @@ class TcpdumpCapture(QWidget):
         self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] [error] {msg}")
 
     def _on_stop_finished(self):
-        if self._stop_done + self._stop_errors >= len(self._stop_workers):
+        if self._stop_done + self._stop_errors >= len(self._stop_workers) and not getattr(self, '_stop_completed', False):
+            self._stop_completed = True
             self._capturing = False
             self.mode_cb.setEnabled(True)
             self.start_btn.setEnabled(True)
@@ -784,7 +1092,7 @@ class TcpdumpCapture(QWidget):
 
         connect_btn = QPushButton("Connect")
         connect_btn.setStyleSheet("QPushButton{background:#0984e3;color:white;border:none;border-radius:4px;padding:6px 18px;font-size:13px;font-weight:bold;}QPushButton:hover{background:#0873c4;}")
-        connect_btn.clicked.connect(lambda: self._test_connection(frame))
+        connect_btn.clicked.connect(lambda: self._test_connection(row))
         host_bar.addWidget(connect_btn)
         row['connect_btn'] = connect_btn
 
@@ -850,8 +1158,8 @@ class TcpdumpCapture(QWidget):
         rl.addWidget(QLabel(f"F{fi+1}:"))
 
         proto = QComboBox()
-        proto.addItems(["any", "tcp", "udp", "icmp", "arp", "sip"])
-        proto.setFixedWidth(70)
+        proto.addItems(["any", "tcp", "udp", "icmp", "arp", "sip", "SBCM"])
+        proto.setFixedWidth(90)
         if data:
             idx = proto.findText(data['proto'])
             if idx >= 0: proto.setCurrentIndex(idx)
@@ -906,7 +1214,9 @@ class TcpdumpCapture(QWidget):
         src_port.textChanged.connect(self._update_preview)
         dst_port.textChanged.connect(self._update_preview)
         dir_cb.toggled.connect(self._update_preview)
+        proto.currentTextChanged.connect(lambda t: self._on_proto_changed(fw, t))
 
+        self._on_proto_changed(fw, proto.currentText())
         self._update_preview()
         return fw
 
@@ -923,6 +1233,15 @@ class TcpdumpCapture(QWidget):
                 lbl.setText(f"F{i+1}:")
         self._update_preview()
 
+    def _on_proto_changed(self, fw, proto):
+        is_sbcm = proto == "SBCM"
+        fw['src_ip'].setDisabled(is_sbcm)
+        fw['dst_ip'].setDisabled(is_sbcm)
+        fw['src_port'].setDisabled(is_sbcm)
+        fw['dst_port'].setDisabled(is_sbcm)
+        fw['directional'].setDisabled(is_sbcm)
+        self._update_preview()
+
     def _get_host_filters(self, row):
         result = []
         for fw in row['filters']:
@@ -937,6 +1256,8 @@ class TcpdumpCapture(QWidget):
         return result
 
     def _build_filter_expr(self, f):
+        if f['proto'] == "SBCM":
+            return "SBCM"
         parts = []
         if f['proto'] != "any":
             parts.append(f['proto'])
@@ -957,16 +1278,26 @@ class TcpdumpCapture(QWidget):
             return
         total = 0
         host_count = 0
+        sbcm_count = 0
         for r in self._host_rows:
             if r['cb'].currentIndex() >= 0 and r['cb'].currentIndex() < len(self._hosts):
                 host_count += 1
-                total += len(r['filters'])
+                filters = self._get_host_filters(r)
+                if any(f['proto'] == 'SBCM' for f in filters):
+                    sbcm_count += 1
+                    total += 1
+                else:
+                    total += len(filters)
         if total == 0:
             self.cmd_preview.setText("No captures configured")
-        elif total == 1:
-            self.cmd_preview.setText("1 capture on 1 host")
-        else:
-            self.cmd_preview.setText(f"{total} captures on {host_count} host(s)")
+            return
+        parts = []
+        if sbcm_count:
+            parts.append(f"{sbcm_count} SBCM")
+        tcpdump_count = total - sbcm_count
+        if tcpdump_count:
+            parts.append(f"{tcpdump_count} tcpdump")
+        self.cmd_preview.setText(f"{' + '.join(parts)} on {host_count} host(s)")
 
     def _remove_host_row(self, frame):
         for i, r in enumerate(self._host_rows):
@@ -1031,6 +1362,8 @@ class TcpdumpCapture(QWidget):
         dlg.resize(520, 380)
         layout = QVBoxLayout(dlg)
         host_list = QListWidget()
+        host_list.setDragDropMode(QListWidget.InternalMove)
+        host_list.setDefaultDropAction(Qt.MoveAction)
         layout.addWidget(QLabel("Saved Hosts:"))
         layout.addWidget(host_list)
         form = QFormLayout()
@@ -1056,18 +1389,23 @@ class TcpdumpCapture(QWidget):
 
         def refresh_list():
             host_list.clear()
-            for h in self._hosts:
-                host_list.addItem(f"{h.get('desc', h['name'])} — {h['host']}:{h.get('port',22)} ({h['user']})")
+            for i, h in enumerate(self._hosts):
+                item = QListWidgetItem(f"{h.get('desc', h['name'])} — {h['host']}:{h.get('port',22)} ({h['user']})")
+                item.setData(Qt.UserRole, i)
+                host_list.addItem(item)
 
         def on_select():
-            row_idx = host_list.currentRow()
-            if 0 <= row_idx < len(self._hosts):
-                h = self._hosts[row_idx]
+            item = host_list.currentItem()
+            if not item:
+                return
+            idx = item.data(Qt.UserRole)
+            if idx is not None and 0 <= idx < len(self._hosts):
+                h = self._hosts[idx]
                 ip_edit.setText(h["host"]); port_edit.setText(str(h.get("port",22)))
                 user_edit.setText(h["user"]); pwd_edit.setText(h.get("pwd",""))
                 desc_edit.setText(h.get("desc",""))
 
-        host_list.currentRowChanged.connect(on_select)
+        host_list.currentItemChanged.connect(on_select)
         refresh_list()
 
         def on_add():
@@ -1081,9 +1419,11 @@ class TcpdumpCapture(QWidget):
         add_btn.clicked.connect(on_add)
 
         def on_update():
-            row_idx = host_list.currentRow()
-            if row_idx < 0 or not ip_edit.text().strip(): return
-            self._hosts[row_idx] = dict(host=ip_edit.text().strip(), port=int(port_edit.text().strip() or "22"),
+            item = host_list.currentItem()
+            if not item or not ip_edit.text().strip(): return
+            idx = item.data(Qt.UserRole)
+            if idx is None or idx >= len(self._hosts): return
+            self._hosts[idx] = dict(host=ip_edit.text().strip(), port=int(port_edit.text().strip() or "22"),
                 user=user_edit.text().strip() or "root", pwd=pwd_edit.text(), name=desc_edit.text().strip() or ip_edit.text().strip(), desc=desc_edit.text().strip())
             self._save_hosts()
             refresh_list(); self._reload_hosts()
@@ -1091,13 +1431,28 @@ class TcpdumpCapture(QWidget):
         update_btn.clicked.connect(on_update)
 
         def on_del():
-            row_idx = host_list.currentRow()
-            if row_idx < 0: return
-            if QMessageBox.question(dlg, "Confirm", f"Delete {self._hosts[row_idx]['host']}?") == QMessageBox.Yes:
-                self._hosts.pop(row_idx); self._save_hosts(); refresh_list(); self._reload_hosts()
+            item = host_list.currentItem()
+            if not item: return
+            idx = item.data(Qt.UserRole)
+            if idx is None or idx >= len(self._hosts): return
+            if QMessageBox.question(dlg, "Confirm", f"Delete {self._hosts[idx]['host']}?") == QMessageBox.Yes:
+                self._hosts.pop(idx); self._save_hosts(); refresh_list(); self._reload_hosts()
 
         del_btn.clicked.connect(on_del)
-        dlg.finished.connect(lambda: on_close() if on_close else None)
+        def on_dlg_close():
+            # reorder self._hosts to match drag-adjusted list order
+            new_order = []
+            for i in range(host_list.count()):
+                idx = host_list.item(i).data(Qt.UserRole)
+                if idx is not None and idx < len(self._hosts):
+                    new_order.append(self._hosts[idx])
+            if new_order:
+                self._hosts[:] = new_order
+                self._save_hosts()
+            if on_close:
+                on_close()
+
+        dlg.finished.connect(on_dlg_close)
         dlg.exec()
 
     def _save_hosts(self):
