@@ -3,6 +3,8 @@ import sys, os, json, logging, time, threading, difflib, posixpath, re, subproce
 from datetime import datetime
 from collections import defaultdict
 
+from framework.logger import get_logger
+
 import paramiko
 from scp import SCPClient
 
@@ -15,7 +17,7 @@ from PySide6.QtWidgets import (QWidget, QApplication, QVBoxLayout, QHBoxLayout,
 from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent
 from PySide6.QtGui import QFont, QAction
 
-logger = logging.getLogger(__name__)
+logger = get_logger("ims_tools_sub")
 
 BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 HOSTS_PATH = os.path.join(BASE_DIR, "config", "hosts.json")

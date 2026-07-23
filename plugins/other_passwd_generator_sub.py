@@ -12,8 +12,10 @@ from PySide6.QtWidgets import (QWidget, QApplication, QVBoxLayout, QHBoxLayout,
     QTabWidget, QGroupBox)
 from PySide6.QtCore import Qt
 
+from framework.logger import get_logger
 
-logger = logging.getLogger(__name__)
+
+logger = get_logger("other_passwd_generator_sub")
 
 
 def rand_pass(length=12):
@@ -74,14 +76,7 @@ class PasswdTool(QWidget):
         return en if self.lang == "en" else zh
 
     def _init_logging(self):
-        log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(
-            os.path.join(log_dir, f"密码生成_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
-            encoding="utf-8")
-        fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(fh)
-        logger.setLevel(logging.INFO)
+        logger.info("密码生成器日志初始化完成")
 
     def _btn(self, text, color="#0984e3", hover=None):
         if hover is None:

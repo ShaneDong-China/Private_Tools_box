@@ -14,8 +14,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QThread, Signal, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QFont, QLinearGradient, QPen, QBrush
 
+from framework.logger import get_logger
 
-logger = logging.getLogger(__name__)
+
+logger = get_logger("network_pingscanner_sub")
 
 
 class PingWorker(QThread):
@@ -127,16 +129,7 @@ class PingScanner(QWidget):
         self._result_timer.setInterval(30)
         self._result_timer.timeout.connect(self._process_next_result)
 
-        log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(
-            os.path.join(log_dir, f"PingScanner_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
-            encoding="utf-8")
-        fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.logger = logging.getLogger(f"{__name__}.PingScanner")
-        self.logger.addHandler(fh)
-        self.logger.setLevel(logging.INFO)
-        self.logger.info("PingScanner initialized")
+        logger.info("PingScanner initialized")
         self._setup_ui()
 
     def _tr(self, zh: str, en: str) -> str:
@@ -302,7 +295,7 @@ class PingScanner(QWidget):
         self.stop_btn.setEnabled(True)
         self.status_label.setText(f"正在扫描 {base}.{ip_start} - {base}.{ip_end} ...")
         self._log(f"开始扫描 {base}.{ip_start} - {base}.{ip_end} ({ip_end - ip_start + 1}个)")
-        self.logger.info(f"开始扫描 {base}.{ip_start} - {base}.{ip_end}")
+        logger.info(f"开始扫描 {base}.{ip_start} - {base}.{ip_end}")
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait()
@@ -316,7 +309,7 @@ class PingScanner(QWidget):
             self.worker.stop()
             self.worker.wait()
             self._log("用户手动停止扫描")
-            self.logger.info("用户手动停止扫描")
+            logger.info("用户手动停止扫描")
             self._on_finished()
 
     def _on_result(self, idx, level):
@@ -342,15 +335,12 @@ class PingScanner(QWidget):
         total = self._alive_count + self._dead_count
         self.status_label.setText(f"扫描完成: {self._alive_count} 通, {self._dead_count} 不通 / 共 {total}")
         self._log(f"扫描完成: {self._alive_count} 通, {self._dead_count} 不通")
-        self.logger.info(f"扫描完成: {self._alive_count} 通, {self._dead_count} 不通")
+        logger.info(f"扫描完成: {self._alive_count} 通, {self._dead_count} 不通")
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait()
-        for h in self.logger.handlers[:]:
-            h.close()
-            self.logger.removeHandler(h)
         event.accept()
 
 

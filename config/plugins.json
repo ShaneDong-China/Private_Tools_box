@@ -17,7 +17,7 @@
       ]
     },
     {
-      "name": "linux_tools",
+      "name": "linux_tools_sub",
       "display_name": "Linux工具集",
       "display_name_en": "Linux Tools",
       "version": "1.0.0",
@@ -31,7 +31,7 @@
       ]
     },
     {
-      "name": "password_generator",
+      "name": "other_passwd_generator_sub",
       "display_name": "密码生成器",
       "display_name_en": "Password Generator",
       "version": "1.0.0",
@@ -45,7 +45,7 @@
       ]
     },
     {
-      "name": "pdf_tools",
+      "name": "other_pdf_tools_sub",
       "display_name": "PDF工具集",
       "display_name_en": "PDF Tools",
       "version": "1.0.0",
@@ -59,7 +59,7 @@
       ]
     },
     {
-      "name": "ping_scanner",
+      "name": "network_pingscanner_sub",
       "display_name": "网段Ping扫描器",
       "display_name_en": "Network Ping Scanner",
       "version": "1.0.0",
@@ -73,7 +73,7 @@
       ]
     },
     {
-      "name": "ims_tool",
+      "name": "ims_tools_sub",
       "display_name": "IMS工具",
       "display_name_en": "IMS Tool",
       "version": "1.0.0",
@@ -87,7 +87,7 @@
       ]
     },
     {
-      "name": "docker_tools",
+      "name": "linux_docker_sub",
       "display_name": "Docker自动化",
       "display_name_en": "Docker Automation",
       "version": "1.0.1",
@@ -101,7 +101,7 @@
       ]
     },
     {
-      "name": "yum_manager",
+      "name": "linux_yum_manager_sub",
       "display_name": "YUM源管理器",
       "display_name_en": "YUM Repo Manager",
       "version": "1.0.0",
@@ -115,7 +115,7 @@
       ]
     },
     {
-      "name": "ipv6_calculator",
+      "name": "network_ipv6_calculator_sub",
       "display_name": "IPv6掩码计算器",
       "display_name_en": "IPv6 Calculator",
       "version": "1.0.0",
@@ -129,7 +129,21 @@
       ]
     },
     {
-      "name": "chrony_ntp_sync",
+      "name": "network_ipv4_calculator_sub",
+      "display_name": "IPv4掩码计算器",
+      "display_name_en": "IPv4 Calculator",
+      "version": "1.0.0",
+      "class_name": "IPv4Plugin",
+      "icon": "🌐",
+      "description": "IPv4 地址计算、子网划分、掩码转换",
+      "description_en": "IPv4 address calculation, subnetting, mask conversion",
+      "tags": [
+        "network",
+        "ipv4"
+      ]
+    },
+    {
+      "name": "linux_chrony_sub",
       "display_name": "Chrony时间同步",
       "display_name_en": "Chrony Time Sync",
       "version": "1.0.0",
@@ -144,7 +158,7 @@
       ]
     },
     {
-      "name": "hash_calculator",
+      "name": "other_hash_sub",
       "display_name": "Hash计算器",
       "display_name_en": "Hash Calculator",
       "version": "1.0.0",
@@ -158,7 +172,7 @@
       ]
     },
     {
-      "name": "system_init",
+      "name": "linux_system_init_sub",
       "display_name": "系统初始化",
       "display_name_en": "System Init",
       "version": "1.0.0",

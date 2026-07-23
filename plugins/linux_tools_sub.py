@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QObject, Signal, QThread, Qt, QRect, QTimer
 from PySide6.QtGui import QFont
 
-logger = logging.getLogger(__name__)
+from framework.logger import get_logger
+
+logger = get_logger("linux_tools_sub")
 THIS_DIR = os.path.dirname(__file__)
 
 
@@ -658,14 +660,8 @@ class LinuxToolsGUI(QWidget):
         self._status_signal.connect(self._on_status_update)
 
     def _init_logging(self):
-        log_dir = os.path.join(THIS_DIR, "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(
-            os.path.join(log_dir, f"Linux工具集_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
-            encoding="utf-8")
-        fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(fh)
-        logger.setLevel(logging.INFO)
+        logger.info("Linux工具集日志初始化完成")
+
         # 阻止传播到 root，避免 GUI 消息重复（GUI 已由 _log/_auto_log 直接输出）
         logger.propagate = False
 

@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import QThread, Signal, Qt, QStringListModel
 from PySide6.QtGui import QFont, QTextCursor
 
-logger = logging.getLogger(__name__)
+from framework.logger import get_logger
+
+logger = get_logger("linux_chrony_sub")
 
 ALL_TIMEZONES = [
     "", "Africa/Abidjan", "Africa/Accra", "Africa/Addis_Ababa", "Africa/Algiers",
@@ -356,14 +358,7 @@ class NTPConfigTool(QMainWindow):
         self.init_ui()
 
     def _init_logging(self):
-        log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(
-            os.path.join(log_dir, f"NTP配置_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
-            encoding="utf-8")
-        fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(fh)
-        logger.setLevel(logging.INFO)
+        logger.info("NTP配置工具日志初始化完成")
 
     def _tr(self, zh, en):
         """根据 self.lang 返回对应文本"""

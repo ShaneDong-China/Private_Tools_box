@@ -137,9 +137,7 @@ HTTP_DIR = "/var/www/html"
 MOUNT_BASE = "/root/tmp/mnt/iso"
 YUM_REPOS_DIR = "/etc/yum.repos.d"
 YUM_REPO_DIR = "/opt/tar/yum.repo"
-LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, f"yum_manager_{datetime.datetime.now():%Y%m%d_%H%M%S}.log")
+from framework.logger import get_logger
 
 
 
@@ -153,7 +151,7 @@ import os, sys, json, logging
 
 import paramiko
 
-logger = logging.getLogger(__name__)
+logger = get_logger("linux_yum_manager_sub")
 
 BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -3422,8 +3420,7 @@ class MainWindow(QMainWindow):
         scrollbar = self.log_box.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
         try:
-            with open(LOG_FILE, 'a', encoding='utf-8') as f:
-                f.write(f"[{ts}] {msg}\n")
+            logger.info(msg)
         except Exception:
             pass
 

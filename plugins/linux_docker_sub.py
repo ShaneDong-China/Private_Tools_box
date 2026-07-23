@@ -20,7 +20,9 @@ from PySide6.QtGui import QFont, QColor, QPainter, QPixmap, QPolygon, QPalette, 
 from PySide6.QtWidgets import QStyle
 import paramiko
 
-logger = logging.getLogger(__name__)
+from framework.logger import get_logger
+
+logger = get_logger("linux_docker_sub")
 
 STYLE_CONNECTED = "color: #27ae60; font-weight: bold"
 STYLE_DISCONNECTED = "color: #e74c3c; font-weight: bold"
@@ -2885,16 +2887,7 @@ class DockerManager(QWidget):
         self.resize(1500, 950)
         self.setMinimumSize(800, 600)
 
-        log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        fh = logging.FileHandler(
-            os.path.join(log_dir, f"Docker_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
-            encoding="utf-8")
-        fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.logger = logging.getLogger(f"{__name__}.DockerManager")
-        self.logger.addHandler(fh)
-        self.logger.setLevel(logging.INFO)
-        self.logger.info("DockerManager initialized")
+        logger.info("DockerManager initialized")
 
         self.ssh_params = None
         self.connected = False
@@ -3473,7 +3466,7 @@ class DockerManager(QWidget):
         self.status_indicator.setText("● 未连接")
         self.status_indicator.setStyleSheet(f"{STYLE_DISCONNECTED}; font-size: 13px;")
         self._log("已断开连接")
-        self.logger.info("Disconnected")
+        logger.info("Disconnected")
 
     def _on_worker_output(self, msg):
         self._log(msg)
@@ -3563,7 +3556,7 @@ class DockerManager(QWidget):
             self.net_table.setItem(row, 1, QTableWidgetItem(net.get("driver", "")))
             self.net_table.setItem(row, 2, QTableWidgetItem(net.get("subnet", "")))
 
-        self.logger.info(
+        logger.info(
             f"首页更新: {len(data.get('containers', []))}容器 "
             f"{len(data.get('images', []))}镜像 "
             f"{len(data.get('networks', []))}网络"
@@ -3607,7 +3600,7 @@ class DockerManager(QWidget):
         for btn in self.service_buttons:
             btn.setEnabled(False)
         cmd = f"systemctl {action} docker"
-        self.logger.info(f"服务操作: {cmd}")
+        logger.info(f"服务操作: {cmd}")
         self._execute_command(cmd, f"service_{action}")
 
     def _show_create_network_dialog(self):
@@ -4084,7 +4077,7 @@ class DockerManager(QWidget):
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_box.append(f"[{ts}] {msg}")
-        self.logger.info(msg)
+        logger.info(msg)
 
 
 if __name__ == "__main__":

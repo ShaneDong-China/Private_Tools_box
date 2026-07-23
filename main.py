@@ -9,7 +9,6 @@ import os
 import json
 import logging
 import threading
-from datetime import datetime
 from typing import Optional
 
 from PySide6.QtWidgets import (
@@ -25,6 +24,7 @@ from PySide6.QtGui import QFont, QIcon, QAction, QEnterEvent, QColor, QPalette
 from framework.plugin_manager import PluginManager
 from framework.plugin_updater import PluginUpdater
 from framework.plugin_interface import PluginBase
+from framework.logger import configure_logging, get_logger
 
 # ── 常量 ─────────────────────────────────────────────────────
 APP_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) \
@@ -39,20 +39,16 @@ VERSION_URL = (
 )
 
 # ── 日志 ─────────────────────────────────────────────────────
-os.makedirs(os.path.join(APP_DIR, "logs"), exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(
-            os.path.join(APP_DIR, "logs",
-                         f"toolbox_{datetime.now():%Y%m%d_%H%M%S}.log"),
-            encoding="utf-8",
-        ),
-        logging.StreamHandler(),
-    ],
-)
-logger = logging.getLogger("toolbox")
+configure_logging(os.path.join(APP_DIR, "logs"))
+logger = get_logger("toolbox")
+
+# 控制台输出（开发时用）
+_log_console = logging.StreamHandler(sys.stdout)
+_log_console.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+))
+_log_console.setLevel(logging.INFO)
+logging.getLogger().addHandler(_log_console)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -78,11 +74,11 @@ def load_categories() -> list[dict]:
     # 硬编码 fallback
     return [
         {"id": "linux",  "name": "Linux系统相关类", "icon": "🐧",
-         "plugins": ["linux_tools", "yum_manager", "docker_tools"]},
+         "plugins": ["linux_tools_sub", "linux_yum_manager_sub", "linux_docker_sub"]},
         {"id": "network","name": "网络相关类",       "icon": "🌐",
-         "plugins": ["ping_scanner", "ipv6_calculator", "password_generator"]},
+         "plugins": ["network_pingscanner_sub", "network_ipv6_calculator_sub", "network_ipv4_calculator_sub", "other_passwd_generator_sub"]},
         {"id": "telecom","name": "通信网元相关类",    "icon": "📡",
-         "plugins": ["ims_tool", "pdf_tools"]},
+         "plugins": ["ims_tools_sub", "other_pdf_tools_sub"]},
     ]
 
 

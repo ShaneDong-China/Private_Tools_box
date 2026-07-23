@@ -154,8 +154,7 @@ $RECYCLE.BIN/
 # ====================
 # 其他常见文件
 # ====================
-logs/
-output/
+
 # 临时文件
 *.tmp
 *.temp
@@ -188,3 +187,9 @@ build/
 打包命令.txt/
 打包命令.txt
 *.md
+logs/
+output/
+main.dist/
+old_python/
+.*/
+
