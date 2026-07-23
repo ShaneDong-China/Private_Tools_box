@@ -203,9 +203,15 @@ class PluginUpdater:
                         if progress_callback and total > 0:
                             progress_callback(downloaded, total)
 
-            # 原子替换
+            # 原子替换（处理 Windows 文件锁）
             if os.path.exists(target_path):
-                os.remove(target_path)
+                try:
+                    os.remove(target_path)
+                except (OSError, PermissionError) as exc:
+                    logger.error("File locked, cannot replace '%s': %s", target_path, exc)
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                    return False
             shutil.move(tmp_path, target_path)
             logger.info("Downloaded plugin '%s' -> %s", name, target_path)
             return True

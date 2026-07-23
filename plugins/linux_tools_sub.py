@@ -42,6 +42,8 @@ class _GuiLogHandler(logging.Handler):
         try:
             msg = self.format(record)
             self._signal.emit(msg)
+        except RuntimeError:
+            pass  # 窗口已关闭，信号源已被删除
         except Exception:
             self.handleError(record)
 

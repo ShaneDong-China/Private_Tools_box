@@ -7,7 +7,13 @@
       "icon": "🐧",
       "description": "Chrony、YUM、Docker、系统初始化",
       "description_en": "Chrony, YUM, Docker, System Init",
-      "plugins": ["linux_chrony_sub", "linux_yum_manager_sub", "linux_docker_sub", "linux_tools_sub", "linux_system_init_sub"]
+      "plugins": [
+        "linux_chrony_sub",
+        "linux_yum_manager_sub",
+        "linux_docker_sub",
+        "linux_tools_sub",
+        "linux_system_init_sub"
+      ]
     },
     {
       "id": "network",
@@ -16,7 +22,11 @@
       "icon": "🌐",
       "description": "Ping 扫描、IPv6 计算、密码工具",
       "description_en": "Ping scan, IPv6 calculator, password tools",
-      "plugins": ["network_pingscanner_sub", "network_ipv6_calculator_sub", "network_ipv4_calculator_sub"]
+      "plugins": [
+        "network_pingscanner_sub",
+        "network_ipv6_calculator_sub",
+        "network_ipv4_calculator_sub"
+      ]
     },
     {
       "id": "telecom",
@@ -25,7 +35,9 @@
       "icon": "📡",
       "description": "IMS 抓包升级",
       "description_en": "IMS capture/upgrade",
-      "plugins": ["ims_tools_sub"]
+      "plugins": [
+        "ims_tools_sub"
+      ]
     },
     {
       "id": "other",
@@ -34,7 +46,11 @@
       "icon": "🔧",
       "description": "密码生成、哈希计算、PDF 处理等通用工具",
       "description_en": "Password, hash, PDF and other tools",
-      "plugins": ["other_passwd_generator_sub", "other_hash_sub", "other_pdf_tools_sub"]
+      "plugins": [
+        "other_passwd_generator_sub",
+        "other_hash_sub",
+        "other_pdf_tools_sub"
+      ]
     }
   ]
 }
