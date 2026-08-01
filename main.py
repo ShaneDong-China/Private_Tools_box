@@ -349,7 +349,7 @@ class UpdateDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        cancel_btn = QPushButton("取消，使用本地版本")
+        cancel_btn = QPushButton("取消")
         cancel_btn.setFixedHeight(36)
         cancel_btn.setStyleSheet("""
             QPushButton {
@@ -444,9 +444,7 @@ class ProgressDialog(QDialog):
 # ═══════════════════════════════════════════════════════════
 
 class PlaceholderCard(QFrame):
-    """空位占位卡片 — 显示"待开发"，点击可检查 GitHub 是否有新模块。"""
-
-    placeholder_clicked = Signal(object)  # 携带 {"category_id": str, "slot_index": int}
+    """空位占位卡片 — 仅显示"待开发"，点击无任何反应。"""
 
     PLACEHOLDER_STYLE = """
         QFrame#placeholderCard {
@@ -457,20 +455,10 @@ class PlaceholderCard(QFrame):
 
     def __init__(self, category_id: str, slot_index: int, parent=None):
         super().__init__(parent)
-        self._category_id = category_id
-        self._slot_index = slot_index
         self.setObjectName("placeholderCard")
         self.setStyleSheet(self.PLACEHOLDER_STYLE)
         self.setMinimumSize(140, 80)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-        if event.button() == Qt.LeftButton:
-            self.placeholder_clicked.emit({
-                "category_id": self._category_id,
-                "slot_index": self._slot_index,
-            })
 
 
 # ═══════════════════════════════════════════════════════════
@@ -482,7 +470,6 @@ class GridPage(QWidget):
 
     launch_plugin = Signal(dict)  # 点击启动时发射
     update_plugin = Signal(dict)  # 点击更新/安装时发射
-    check_placeholder = Signal(dict)  # 点击待开发时发射
 
     COLS = 2
     ROWS = 3
@@ -573,12 +560,9 @@ class GridPage(QWidget):
                 self._grid_layout.addWidget(card, row, col)
                 idx += 1
             else:
-                # ── 待开发占位卡 ──
+                # ── 待开发占位卡（纯展示，点击无反应） ──
                 placeholder = PlaceholderCard(
                     category.get("id", ""), slot
-                )
-                placeholder.placeholder_clicked.connect(
-                    self.check_placeholder.emit
                 )
                 self._grid_layout.addWidget(placeholder, row, col)
 
@@ -600,8 +584,6 @@ class MainWindow(QMainWindow):
     _update_proceed = Signal(dict, dict)  # (plugin_info, update_info) 主线程弹确认框
     _update_finished = Signal(str, object, bool, bool)  # (pname, 状态, 下载成功?, 更新前已安装?)
     _updates_ready = Signal(dict, bool)  # (状态映射, 是否拉取成功)
-    _placeholder_done = Signal(str, object)  # 占位卡检查完成 (kind, payload)
-    _module_install_done = Signal(bool, str)  # 新模块安装完成 (ok, display_name)
 
     def __init__(self):
         super().__init__()
@@ -628,8 +610,6 @@ class MainWindow(QMainWindow):
         self._update_proceed.connect(self._on_update_proceed)
         self._update_finished.connect(self._on_update_finished)
         self._updates_ready.connect(self._on_updates_ready)
-        self._placeholder_done.connect(self._on_placeholder_done)
-        self._module_install_done.connect(self._on_module_install_done)
 
         self._setup_window()
         self._setup_ui()
@@ -870,7 +850,6 @@ class MainWindow(QMainWindow):
         self._grid_page = GridPage()
         self._grid_page.launch_plugin.connect(self._on_launch_plugin)
         self._grid_page.update_plugin.connect(self._on_update_clicked)
-        self._grid_page.check_placeholder.connect(self._on_placeholder_clicked)
 
         layout.addWidget(self._grid_page)
         return panel
@@ -925,128 +904,6 @@ class MainWindow(QMainWindow):
             return
 
         self._do_launch(pname)
-
-
-    # ── 待开发占位点击 ─────────────────────────────────────
-
-    def _on_placeholder_clicked(self, data: dict):
-        """用户点击"待开发"占位卡 — 检查 GitHub 是否有新模块可下载。"""
-        cat_id = data.get("category_id", "")
-        self._set_status(f"正在检查是否有新模块上线 ...")
-
-        def _check():
-            # 显式点击 → 强制真实请求（绕过 TTL 缓存）
-            manifest = self._plugin_updater.fetch_remote_manifest(force=True)
-            if manifest is None:
-                self._network_result.emit("gh", False)  # 回写灯红
-                self._placeholder_done.emit("fail", None)
-                return
-            self._network_result.emit("gh", True)   # 回写灯绿
-
-            # 找出当前分类下，本地还没装载的远程插件
-            cat = next((c for c in load_categories() if c.get("id") == cat_id), None)
-            if not cat:
-                self._placeholder_done.emit("status", "分类无效")
-                return
-
-            remote_names = {p.get("name")
-                           for p in manifest.get("plugins", [])}
-            local_names = set(self._plugins_map.keys())
-            new_plugins = remote_names - local_names
-
-            if not new_plugins:
-                self._placeholder_done.emit("none", None)
-                return
-
-            # 筛选属于当前分类的新插件
-            cat_plugins = cat.get("plugins", [])
-            available = [p for p in manifest.get("plugins", [])
-                         if p.get("name") in cat_plugins
-                         and p.get("name") in new_plugins]
-
-            if not available:
-                self._placeholder_done.emit("none_cat", None)
-                return
-
-            # 有可用的新模块，交由主线程逐一询问下载
-            self._placeholder_done.emit("available", available)
-
-        threading.Thread(target=_check, daemon=True).start()
-
-    def _on_placeholder_done(self, kind: str, payload):
-        """主线程：占位卡检查结果（信号驱动，安全更新 UI）。"""
-        if kind == "fail":
-            self._set_status("⚠️ 网络不可达，无法检查新模块")
-        elif kind == "status":
-            self._set_status(str(payload))
-        elif kind == "none":
-            QMessageBox.information(
-                self, "暂无新模块",
-                "目前没有新的功能模块上线，敬请期待后续更新 📅")
-            self._set_status("无新模块")
-        elif kind == "none_cat":
-            QMessageBox.information(
-                self, "暂无新模块",
-                "当前分类暂无新模块，请关注其他分类的更新 📅")
-            self._set_status("无新模块")
-        elif kind == "available":
-            for plugin in payload:
-                display = plugin.get("display_name", plugin.get("name", ""))
-                self._prompt_new_module(plugin, display)
-
-    def _prompt_new_module(self, plugin_info: dict, display_name: str):
-        """提示用户下载新模块。"""
-        reply = QMessageBox.question(
-            self, "发现新模块",
-            f"发现新的功能模块「{display_name}」可下载安装！\n\n"
-            f"版本: {plugin_info.get('version', '1.0.0')}\n"
-            f"大小: 约 1-5 MB\n\n是否立即下载？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        # 下载并安装新模块
-        pname = plugin_info.get("name", "")
-        url = plugin_info.get("download_url", "")
-        version = plugin_info.get("version", "1.0.0")
-
-        self._module_progress_dlg = ProgressDialog(display_name, self)
-        self._module_progress_dlg.show()
-
-        def _download():
-            ok = self._plugin_updater.download_plugin(
-                pname, url,
-                progress_callback=lambda d, t:
-                    self._module_progress_dlg.progress_changed.emit(d, t),
-            )
-            if ok:
-                self._plugin_updater.set_local_version(pname, version)
-                # 更新本地注册表
-                self._plugins_map[pname] = plugin_info
-            # 切回主线程统一处理 UI（子线程不能安全操作界面）
-            self._module_install_done.emit(ok, display_name)
-
-        threading.Thread(target=_download, daemon=True).start()
-
-    def _on_module_install_done(self, ok: bool, display_name: str):
-        """主线程：新模块安装完成。"""
-        if self._module_progress_dlg:
-            self._module_progress_dlg.close()
-            self._module_progress_dlg = None
-        if ok:
-            self._finish_refresh()
-            self._set_status(f"✅ 新模块已安装: {display_name}")
-            QMessageBox.information(
-                self, "安装完成",
-                f"「{display_name}」已安装成功 ✅\n\n"
-                f"现在可以在对应分类中找到它并点击[启动]使用。")
-        else:
-            self._set_status(f"⚠️ 下载「{display_name}」失败，请检查网络后重试")
-            QMessageBox.warning(
-                self, "下载失败",
-                f"下载「{display_name}」失败，请检查网络后重试。")
 
     def _do_launch(self, plugin_name: str):
         """加载插件 .pyd 并打开独立窗口（主线程执行，纯本地操作）。"""
