@@ -7,6 +7,7 @@ Plugin Updater: 从 GitHub 读取 plugins.json，
 import json
 import os
 import sys
+import time
 import logging
 import urllib.request
 import urllib.error
@@ -22,19 +23,26 @@ class PluginUpdater:
     """插件自动更新器。"""
 
     def __init__(self, version_url: str, plugins_dir: str = None,
-                 config_path: str = None, timeout: int = 15):
+                 config_path: str = None, timeout: int = 15,
+                 manifest_timeout: int = 3):
         """
         Args:
             version_url: GitHub 上 plugins.json 的 RAW 地址
             plugins_dir: 本地插件目录（None=自动）
             config_path: 本地 config/plugins.json 路径（None=从 plugins_dir 推导）
-            timeout:     HTTP 请求超时（秒）
+            timeout:            HTTP 请求超时（秒，下载 .pyd 用）
+            manifest_timeout:   远程清单请求超时（秒，清单只有几 KB，短超时即可）
         """
         self._version_url = version_url
         self._plugins_dir = plugins_dir or self._default_plugins_dir()
         self._config_path = config_path
         self._timeout = timeout
+        self._manifest_timeout = manifest_timeout
         self._update_results: list[dict] = []
+        # 远程清单缓存（成功/失败都缓存，避免反复访问网络）
+        self.manifest_ttl: float = 300.0
+        self._manifest_cache: Optional[dict] = None
+        self._manifest_cached_at: float = 0.0
 
     @staticmethod
     def _default_plugins_dir() -> str:
@@ -56,8 +64,17 @@ class PluginUpdater:
 
     # ── 远程 plugins.json 解析 ─────────────────────────────
 
-    def fetch_remote_manifest(self) -> Optional[dict]:
-        """从 GitHub 获取远程插件清单。"""
+    def fetch_remote_manifest(self, force: bool = False) -> Optional[dict]:
+        """从 GitHub 获取远程插件清单（TTL 内走缓存，成功/失败都缓存）。
+
+        Args:
+            force: True 时跳过 TTL 缓存，强制真实请求（手动刷新/显式检查用）。
+        """
+        now = time.time()
+        if not force and now - self._manifest_cached_at < self.manifest_ttl:
+            return self._manifest_cache
+
+        data = None
         try:
             # 加随机参数绕过 CDN 缓存
             import random
@@ -66,18 +83,20 @@ class PluginUpdater:
                 url,
                 headers={"User-Agent": "Toolbox-Updater/1.0"},
             )
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self._manifest_timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             logger.info("Fetched remote manifest: %d plugins",
                         len(data.get("plugins", [])))
-            return data
         except urllib.error.HTTPError as exc:
             logger.warning("HTTP %d fetching manifest: %s", exc.code, exc.reason)
         except urllib.error.URLError as exc:
             logger.warning("URL error fetching manifest: %s", exc.reason)
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to parse manifest: %s", exc)
-        return None
+        finally:
+            self._manifest_cache = data
+            self._manifest_cached_at = now
+        return data
 
     # ── 本地版本读写（基于 config/plugins.json） ───────────
 

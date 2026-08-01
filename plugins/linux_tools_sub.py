@@ -42,8 +42,9 @@ class _GuiLogHandler(logging.Handler):
         try:
             msg = self.format(record)
             self._signal.emit(msg)
-        except RuntimeError:
-            pass  # 窗口已关闭，信号源已被删除
+        except (RuntimeError, AttributeError):
+            # 信号源已被删除（窗口已关闭）：自动摘除自己，避免持续收到日志
+            logging.getLogger().removeHandler(self)
         except Exception:
             self.handleError(record)
 
@@ -661,6 +662,13 @@ class LinuxToolsGUI(QWidget):
         self._gui_log_signal.connect(self._auto_log)
         self._status_signal.connect(self._on_status_update)
 
+    def closeEvent(self, event):
+        """窗口关闭时摘除全局日志 handler，避免残留 handler 往已删除的信号发消息。"""
+        if getattr(self, "_gui_handler", None):
+            logging.getLogger().removeHandler(self._gui_handler)
+            self._gui_handler = None
+        super().closeEvent(event)
+
     def _init_logging(self):
         logger.info("Linux工具集日志初始化完成")
 
@@ -672,6 +680,7 @@ class LinuxToolsGUI(QWidget):
         gui_handler.setFormatter(logging.Formatter('%(name)s [%(levelname)s] %(message)s'))
         gui_handler.setLevel(logging.INFO)
         logging.getLogger().addHandler(gui_handler)
+        self._gui_handler = gui_handler  # 窗口关闭时摘除（closeEvent）
 
     def _init_ui(self):
         self.setStyleSheet("""

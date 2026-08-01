@@ -233,6 +233,20 @@ class CalcWorker(QThread):
         self.finished.emit(result)
 
 
+class SubnetWorker(QThread):
+    """后台执行子网划分（大网段可能产生数千上万个子网），不阻塞 UI。"""
+    finished = Signal(object)  # list[dict] result
+
+    def __init__(self, network: str, target_prefix: int, parent=None):
+        super().__init__(parent)
+        self._network = network
+        self._target = target_prefix
+
+    def run(self):
+        results = IPv4CalculatorCore.subnetting(self._network, self._target)
+        self.finished.emit(results)
+
+
 # ═══════════════════════════════════════════════════════════
 #  GUI
 # ═══════════════════════════════════════════════════════════
@@ -509,15 +523,16 @@ class IPv4CalculatorApp(QMainWindow):
         self._snet_prefix.setCurrentIndex(29)  # /30
         form.addWidget(self._snet_prefix)
 
-        btn = QPushButton("✂️ 划分")
-        btn.setStyleSheet(
+        self._subnet_btn = QPushButton("✂️ 划分")
+        self._subnet_btn.setStyleSheet(
             "QPushButton { background-color: #a6e3a1; color: #1e1e2e;"
             "border: none; border-radius: 6px;"
             "padding: 8px 24px; font-size: 13px; font-weight: bold; }"
             "QPushButton:hover { background-color: #94e2d5; }"
+            "QPushButton:disabled { background-color: #45475a; color: #6c7086; }"
         )
-        btn.clicked.connect(self._subnet_calc)
-        form.addWidget(btn)
+        self._subnet_btn.clicked.connect(self._subnet_calc)
+        form.addWidget(self._subnet_btn)
 
         form.addStretch()
 
@@ -558,23 +573,46 @@ class IPv4CalculatorApp(QMainWindow):
         self.tabs.addTab(tab, "子网划分")
 
     def _subnet_calc(self):
+        """点击划分 → 后台线程计算（大网段子网多，避免卡死界面）。"""
+        # 防重复触发（按钮已禁用，回车键仍可能触发）
+        if getattr(self, "_subnet_worker", None) and self._subnet_worker.isRunning():
+            return
+
         network = self._snet_input.text().strip()
         target = self._snet_prefix.currentData()
-        results = IPv4CalculatorCore.subnetting(network, target)
+
+        # 禁用按钮，显示加载状态
+        self._subnet_btn.setEnabled(False)
+        self._subnet_btn.setText("⏳ 划分中...")
+        self.statusBar().showMessage("正在计算子网...")
+
+        self._subnet_worker = SubnetWorker(network, target)
+        self._subnet_worker.finished.connect(self._on_subnet_done)
+        self._subnet_worker.start()
+
+    def _on_subnet_done(self, results):
+        """后台计算完成（主线程）：恢复按钮 + 填充结果表格。"""
+        self._subnet_btn.setEnabled(True)
+        self._subnet_btn.setText("✂️ 划分")
 
         if not results or "error" in results[0]:
             self._subnet_table.setRowCount(0)
+            if results and "error" in results[0]:
+                self.statusBar().showMessage(f"❌ {results[0]['error']}")
             return
+
+        # 结果过多时截断显示，避免一次填充上万行卡顿
+        MAX_ROWS = 10000
+        shown = results if len(results) <= MAX_ROWS else results[:MAX_ROWS]
 
         cols = ["子网", "掩码", "网络位", "首台主机", "末台主机", "广播位", "可用主机数"]
         self._subnet_table.setColumnCount(len(cols))
         self._subnet_table.setHorizontalHeaderLabels(cols)
-        self._subnet_table.setRowCount(len(results))
+        self._subnet_table.setRowCount(len(shown))
 
-        for row, r in enumerate(results):
+        for row, r in enumerate(shown):
             # 网络位 = 子网去掉掩码部分（如 "192.168.0.0/24" → "192.168.0.0"）
             net_addr = r["network"].split("/")[0] if "/" in r["network"] else r["network"]
-            cidr = "/" + r["network"].split("/")[1] if "/" in r["network"] else ""
             self._subnet_table.setItem(row, 0, QTableWidgetItem(r["network"]))
             self._subnet_table.setItem(row, 1, QTableWidgetItem(r["netmask"]))
             self._subnet_table.setItem(row, 2, QTableWidgetItem(net_addr))
@@ -587,6 +625,12 @@ class IPv4CalculatorApp(QMainWindow):
         self._subnet_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._subnet_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._subnet_table.setSelectionBehavior(QTableWidget.SelectRows)
+
+        if len(results) > MAX_ROWS:
+            self.statusBar().showMessage(
+                f"✅ 共 {len(results):,} 个子网，仅显示前 {MAX_ROWS:,} 行")
+        else:
+            self.statusBar().showMessage(f"✅ 划分完成：{len(results):,} 个子网")
 
     def _subnet_export(self):
         """将子网划分结果导出为 Excel 文件。"""

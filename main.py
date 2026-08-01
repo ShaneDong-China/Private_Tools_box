@@ -19,8 +19,10 @@ from PySide6.QtWidgets import (
     QSizePolicy, QScrollArea, QMessageBox, QSplitter, QProgressBar,
     QToolTip, QListWidget, QListWidgetItem, QDialog,
 )
-from PySide6.QtCore import Qt, QSize, Signal, QTimer, QThread
-from PySide6.QtGui import QFont, QIcon, QAction, QEnterEvent, QColor, QPalette
+from PySide6.QtCore import Qt, QSize, Signal, QByteArray
+from PySide6.QtGui import (QFont, QIcon, QAction, QEnterEvent, QColor,
+                           QPalette, QPixmap, QPainter)
+from PySide6.QtSvg import QSvgRenderer
 
 # ── 框架组件 ────────────────────────────────────────────────
 from framework.plugin_manager import PluginManager
@@ -107,6 +109,57 @@ def load_plugins() -> dict[str, dict]:
 
 
 # ═══════════════════════════════════════════════════════════
+#  SF Symbols 风格图标（内嵌 SVG 渲染，无外部资源依赖）
+# ═══════════════════════════════════════════════════════════
+
+_sf_icon_cache: dict[str, QIcon] = {}
+
+
+def _sf_icon(svg: str, size: int = 24) -> QIcon:
+    """把 SVG 字符串渲染为 QIcon（懒渲染 + 缓存，需在 QApplication 创建后调用）。
+
+    Disabled 模式也注册同一张图：否则按钮禁用（如「已最新」）时，
+    Qt 会把彩色图标自动灰度化。
+    """
+    icon = _sf_icon_cache.get(svg)
+    if icon is None:
+        renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        icon = QIcon(pixmap)
+        icon.addPixmap(pixmap, QIcon.Mode.Disabled, QIcon.State.Off)
+        _sf_icon_cache[svg] = icon
+    return icon
+
+
+def _sf_icon_svg(paths: str, bg: str, fg: str = "#ffffff") -> str:
+    """SF Symbols 风格：圆角方形底 + 白色线条图标。"""
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" '
+        f'width="24" height="24">'
+        f'<rect x="1" y="1" width="22" height="22" rx="7" fill="{bg}"/>'
+        f'<g stroke="{fg}" stroke-width="2" fill="none" '
+        f'stroke-linecap="round" stroke-linejoin="round">{paths}</g>'
+        '</svg>'
+    )
+
+
+# 更新按钮 4 态图标（只存 SVG 字符串，渲染在首次使用时惰性完成）
+_SF_UPDATE_SVG = _sf_icon_svg(
+    '<path d="M12 19 V6 M6.5 11.5 L12 6 L17.5 11.5"/>', "#f39c12")
+_SF_LATEST_SVG = _sf_icon_svg(
+    '<path d="M5.5 13 L10 17.5 L18.5 7"/>', "#27ae60")
+_SF_UNKNOWN_SVG = _sf_icon_svg(
+    '<circle cx="10.5" cy="10.5" r="5.5"/>'
+    '<line x1="14.8" y1="14.8" x2="19.5" y2="19.5"/>', "#d5dbe0")
+_SF_INSTALL_SVG = _sf_icon_svg(
+    '<path d="M12 5 V18 M6.5 12.5 L12 18 L17.5 12.5"/>', "#f39c12")
+
+
+# ═══════════════════════════════════════════════════════════
 #  工具卡片
 # ═══════════════════════════════════════════════════════════
 
@@ -114,6 +167,13 @@ class ToolCard(QFrame):
     """九宫格中的单个功能模块卡片。"""
 
     launch_clicked = Signal(dict)  # 发射 plugin_info
+    update_clicked = Signal(dict)  # 点击更新/安装
+
+    # 更新按钮状态
+    STATE_HAS_UPDATE = "has_update"          # 橙「⬆ 更新」可点
+    STATE_UP_TO_DATE = "up_to_date"          # 灰「已最新」禁用
+    STATE_UNKNOWN = "unknown"                # 灰「更新」可点（重查）
+    STATE_NOT_INSTALLED = "not_installed"    # 橙「⬇ 安装」可点
 
     CARD_STYLE = """
         QFrame#toolCard {
@@ -143,15 +203,35 @@ class ToolCard(QFrame):
         layout.setContentsMargins(12, 14, 12, 12)
         layout.setSpacing(6)
 
-        # ── 名称 ──
+        # ── 名称行：名称居中 + 更新小按钮（右上角） ──
+        top_row = QHBoxLayout()
+        top_row.setSpacing(0)
+        top_row.addStretch(1)
         name = QLabel(self._info.get("display_name", "?"))
         name.setAlignment(Qt.AlignCenter)
         name.setWordWrap(True)
         name.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
         name.setStyleSheet("color: #2d3436;")
-        layout.addWidget(name)
+        top_row.addWidget(name, 1)
+        top_row.addStretch(1)
 
-        # ── 版本号 ──
+        # 更新按钮（右上角，SF Symbols 风格图标 + 颜色表达状态）
+        self._update_btn = QPushButton()
+        self._update_btn.setCursor(Qt.PointingHandCursor)
+        self._update_btn.setFixedSize(26, 26)
+        self._update_btn.setIconSize(QSize(22, 22))
+        self._update_btn.setStyleSheet("""
+            QPushButton { background: transparent; border: none; }
+            QPushButton:hover { background: rgba(0,0,0,0.06);
+                                border-radius: 6px; }
+        """)
+        self._update_btn.clicked.connect(
+            lambda: self.update_clicked.emit(self._info))
+        top_row.addWidget(self._update_btn)
+
+        layout.addLayout(top_row)
+
+        # ── 版本号（居中） ──
         ver_text = f"v{self._info.get('version', '0.0.0')}"
         ver_label = QLabel(ver_text)
         ver_label.setAlignment(Qt.AlignCenter)
@@ -172,7 +252,7 @@ class ToolCard(QFrame):
 
         layout.addStretch()
 
-        # ── 启动按钮 → 加载进度条 ──
+        # ── 启动按钮（纯本地加载，全宽主按钮） ──
         self._btn = QPushButton("启动")
         self._btn.setCursor(Qt.PointingHandCursor)
         self._btn.setFixedHeight(32)
@@ -188,52 +268,34 @@ class ToolCard(QFrame):
             QPushButton:pressed { background: #3048c0; }
         """)
         self._btn.clicked.connect(self._on_btn_clicked)
-
-        self._pbar = QProgressBar()
-        self._pbar.setRange(0, 100)
-        self._pbar.setValue(0)
-        self._pbar.setFixedHeight(32)
-        self._pbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._pbar.setTextVisible(False)
-        self._pbar.setStyleSheet("""
-            QProgressBar {
-                background: #dfe6e9; border: none; border-radius: 6px;
-            }
-            QProgressBar::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #4361ee, stop:1 #0984e3);
-                border-radius: 6px;
-            }
-        """)
-        self._pbar.hide()
-        self._load_timer = QTimer(self)
-        self._load_timer.setInterval(80)
-        self._load_timer.timeout.connect(self._tick_load)
-
         layout.addWidget(self._btn)
-        layout.addWidget(self._pbar)
 
-    def set_loading(self, loading: bool):
-        """切换启动按钮 / 进度条动画。"""
-        self._btn.setVisible(not loading)
-        self._pbar.setVisible(loading)
-        if loading:
-            self._pbar.setValue(0)
-            self._load_timer.start()
-        else:
-            self._load_timer.stop()
-            self._pbar.setValue(100)
+        self.set_update_state(self.STATE_UNKNOWN)
 
-    def _tick_load(self):
-        """模拟进度递增到 85%。"""
-        v = self._pbar.value()
-        if v < 85:
-            self._pbar.setValue(v + 3)
+    def set_update_state(self, state: str):
+        """设置更新按钮状态（has_update / up_to_date / unknown / not_installed）。
+
+        右上角 SF Symbols 风格图标：线条图标 + 底色表达状态，文字在 tooltip。
+        """
+        if state == self.STATE_HAS_UPDATE:
+            self._update_btn.setIcon(_sf_icon(_SF_UPDATE_SVG))
+            self._update_btn.setEnabled(True)
+            self._update_btn.setToolTip("有新版本，点击更新")
+        elif state == self.STATE_UP_TO_DATE:
+            self._update_btn.setIcon(_sf_icon(_SF_LATEST_SVG))
+            self._update_btn.setEnabled(False)
+            self._update_btn.setToolTip("已是最新版本")
+        elif state == self.STATE_NOT_INSTALLED:
+            self._update_btn.setIcon(_sf_icon(_SF_INSTALL_SVG))
+            self._update_btn.setEnabled(True)
+            self._update_btn.setToolTip("未安装，点击下载安装")
+        else:  # unknown：可点，点击重新检查
+            self._update_btn.setIcon(_sf_icon(_SF_UNKNOWN_SVG))
+            self._update_btn.setEnabled(True)
+            self._update_btn.setToolTip("未检测或网络不可达，点击重新检查")
 
     def _on_btn_clicked(self):
-        """点击启动：显示进度条 → 发射信号。"""
-        self.set_loading(True)
-        QApplication.processEvents()
+        """点击启动：直接发射信号（纯本地加载，无需进度动画）。"""
         self.launch_clicked.emit(self._info)
 
     def enterEvent(self, event: QEnterEvent):
@@ -419,6 +481,7 @@ class GridPage(QWidget):
     """右侧网格视图 — 2列3排，显示当前分类下的插件卡片 + 待开发占位。"""
 
     launch_plugin = Signal(dict)  # 点击启动时发射
+    update_plugin = Signal(dict)  # 点击更新/安装时发射
     check_placeholder = Signal(dict)  # 点击待开发时发射
 
     COLS = 2
@@ -506,6 +569,7 @@ class GridPage(QWidget):
                 })
                 card = ToolCard(info)
                 card.launch_clicked.connect(self.launch_plugin.emit)
+                card.update_clicked.connect(self.update_plugin.emit)
                 self._grid_layout.addWidget(card, row, col)
                 idx += 1
             else:
@@ -531,9 +595,13 @@ class MainWindow(QMainWindow):
     """工具箱主窗口。"""
 
     # 跨线程安全信号
-    _launch_ready = Signal(str)
     _network_result = Signal(str, bool)  # ("gh"/"dl", ok)
     _refresh_done = Signal()  # 刷新完成后通知主线程
+    _update_proceed = Signal(dict, dict)  # (plugin_info, update_info) 主线程弹确认框
+    _update_finished = Signal(str, object, bool, bool)  # (pname, 状态, 下载成功?, 更新前已安装?)
+    _updates_ready = Signal(dict, bool)  # (状态映射, 是否拉取成功)
+    _placeholder_done = Signal(str, object)  # 占位卡检查完成 (kind, payload)
+    _module_install_done = Signal(bool, str)  # 新模块安装完成 (ok, display_name)
 
     def __init__(self):
         super().__init__()
@@ -546,15 +614,22 @@ class MainWindow(QMainWindow):
 
         # ── 运行态 ──
         self._loaded_plugin_windows: dict[str, list[QWidget]] = {}
-        self._upgrade_info: Optional[tuple] = None
         self._progress_dlg: Optional[QDialog] = None
-        self._download_ok: bool = True
-        self._just_updated: bool = False  # 下载更新后标记，用于加载后刷新版本
+        # 卡片更新按钮状态映射（插件名 → ToolCard 状态），重建卡片时恢复
+        self._update_states: dict[str, str] = {}
+        self._update_checking: bool = False  # 全量检测进行中（防连点）
+        # ── 网络状态（None=未完成，False=红，True=绿；纯展示，不拦截任何操作）──
+        self._net: dict = {"gh": None, "dl": None}
+        self._net_checking: bool = False    # 检测进行中（防连点）
 
         # 连接跨线程信号
-        self._launch_ready.connect(self._do_launch)
         self._network_result.connect(self._on_network_result)
         self._refresh_done.connect(self._finish_refresh)
+        self._update_proceed.connect(self._on_update_proceed)
+        self._update_finished.connect(self._on_update_finished)
+        self._updates_ready.connect(self._on_updates_ready)
+        self._placeholder_done.connect(self._on_placeholder_done)
+        self._module_install_done.connect(self._on_module_install_done)
 
         self._setup_window()
         self._setup_ui()
@@ -569,6 +644,8 @@ class MainWindow(QMainWindow):
 
         # 网络状态检测（后台，不影响启动）
         self._check_network_status_raw()
+        # 自动检测各插件更新状态（后台，异步回填卡片按钮）
+        self._check_all_updates()
 
     # ── 窗口 ────────────────────────────────────────────────
 
@@ -666,6 +743,21 @@ class MainWindow(QMainWindow):
         self._refresh_btn.clicked.connect(self._on_refresh_clicked)
         layout.addWidget(self._refresh_btn)
 
+        # ── 刷新更新状态（手动全量重查各插件更新按钮） ──
+        self._check_updates_btn = QPushButton("🔄 刷新更新状态")
+        self._check_updates_btn.setCursor(Qt.PointingHandCursor)
+        self._check_updates_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.08); color: #c8ccd4;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 8px; padding: 7px 18px; font-size: 12px;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.15); color: #ffffff; }
+            QPushButton:disabled { color: #636e72; }
+        """)
+        self._check_updates_btn.clicked.connect(self._on_check_updates_clicked)
+        layout.addWidget(self._check_updates_btn)
+
         # ── 网络状态指示灯 ──
         layout.addSpacing(12)
 
@@ -684,6 +776,23 @@ class MainWindow(QMainWindow):
         lbl_dl = QLabel("下载")
         lbl_dl.setStyleSheet("color: #636e72; font-size: 11px; background: transparent;")
         layout.addWidget(lbl_dl)
+
+        # 手动重测网络按钮
+        self._refresh_net_btn = QPushButton("🔄")
+        self._refresh_net_btn.setToolTip("重新检测网络状态")
+        self._refresh_net_btn.setCursor(Qt.PointingHandCursor)
+        self._refresh_net_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.08); color: #c8ccd4;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 6px; padding: 2px 7px; font-size: 12px;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.15); color: #ffffff; }
+            QPushButton:disabled { color: #636e72; }
+        """)
+        self._refresh_net_btn.setFixedHeight(22)
+        self._refresh_net_btn.clicked.connect(self._on_net_refresh_clicked)
+        layout.addWidget(self._refresh_net_btn)
 
         return bar
 
@@ -760,6 +869,7 @@ class MainWindow(QMainWindow):
 
         self._grid_page = GridPage()
         self._grid_page.launch_plugin.connect(self._on_launch_plugin)
+        self._grid_page.update_plugin.connect(self._on_update_clicked)
         self._grid_page.check_placeholder.connect(self._on_placeholder_clicked)
 
         layout.addWidget(self._grid_page)
@@ -781,11 +891,6 @@ class MainWindow(QMainWindow):
         self._status_label.setText(text)
         logger.info("Status: %s", text)
 
-    def _reset_card_loading(self):
-        """所有卡片恢复为启动按钮。"""
-        for card in self._grid_page.findChildren(ToolCard):
-            card.set_loading(False)
-
     # ── 分类切换 ────────────────────────────────────────────
 
     def _on_category_changed(self, row: int):
@@ -793,46 +898,33 @@ class MainWindow(QMainWindow):
             return
         cat = self._categories[row]
         self._grid_page.show_category(cat, self._plugins_map)
+        self._apply_all_card_states()  # 重建卡片后恢复更新按钮状态
         self._set_status(f"已选: {cat.get('name', '')}")
+
+    def _apply_all_card_states(self):
+        """把 _update_states 应用到所有已显示的卡片（分类切换/重建后恢复）。"""
+        for card in self._grid_page.findChildren(ToolCard):
+            name = card._info.get("name", "")
+            if name in self._update_states:
+                card.set_update_state(self._update_states[name])
 
     # ── 启动插件 ────────────────────────────────────────────
 
     def _on_launch_plugin(self, plugin_info: dict):
-        """点击[启动] → 检查本地文件 → 无则自动下载 → 有则查更新。"""
+        """点击[启动] → 纯本地加载，零网络。
+
+        安装/更新一律走卡片左侧的「更新」按钮。
+        """
         pname = plugin_info.get("name", "")
-        self._set_status(f"正在检查: {plugin_info.get('display_name', pname)} ...")
+        display = plugin_info.get("display_name", pname)
 
-        def _check():
-            # 检查本地是否有插件文件，没有则自动下载
-            pyd_path = os.path.join(PLUGINS_DIR, f"{pname}.pyd")
-            py_path = os.path.join(PLUGINS_DIR, f"{pname}.py")
-            if not os.path.exists(pyd_path) and not os.path.exists(py_path):
-                version = plugin_info.get("version", "1.0.0")
-                url = self._plugin_updater._build_download_url(pname, version)
-                logger.info("First-time download: %s %s", pname, version)
-                ok = self._plugin_updater.download_plugin(pname, url)
-                if ok:
-                    self._plugin_updater.set_local_version(pname, version)
-                    self._just_updated = True
-                self._launch_ready.emit(pname)
-                return
+        pyd_path = os.path.join(PLUGINS_DIR, f"{pname}.pyd")
+        py_path = os.path.join(PLUGINS_DIR, f"{pname}.py")
+        if not os.path.exists(pyd_path) and not os.path.exists(py_path):
+            self._set_status(f"{display} 未安装，请点「⬇ 安装」下载")
+            return
 
-            # 已有文件，检查更新
-            try:
-                manifest = self._plugin_updater.fetch_remote_manifest()
-                if manifest and self._download_ok:
-                    update_info = self._plugin_updater.check_plugin_update(
-                        pname, manifest
-                    )
-                    if update_info:
-                        self._upgrade_info = (plugin_info, update_info)
-                        self._launch_ready.emit("__update_prompt__")
-                        return
-            except Exception:
-                pass
-            self._launch_ready.emit(pname)
-
-        threading.Thread(target=_check, daemon=True).start()
+        self._do_launch(pname)
 
 
     # ── 待开发占位点击 ─────────────────────────────────────
@@ -843,19 +935,18 @@ class MainWindow(QMainWindow):
         self._set_status(f"正在检查是否有新模块上线 ...")
 
         def _check():
-            manifest = self._plugin_updater.fetch_remote_manifest()
+            # 显式点击 → 强制真实请求（绕过 TTL 缓存）
+            manifest = self._plugin_updater.fetch_remote_manifest(force=True)
             if manifest is None:
-                QTimer.singleShot(0, lambda: QMessageBox.information(
-                    self, "暂无新模块",
-                    "目前没有新的功能模块上线，敬请期待后续更新 📅"
-                ))
-                QTimer.singleShot(0, lambda: self._set_status("无新模块"))
+                self._network_result.emit("gh", False)  # 回写灯红
+                self._placeholder_done.emit("fail", None)
                 return
+            self._network_result.emit("gh", True)   # 回写灯绿
 
             # 找出当前分类下，本地还没装载的远程插件
             cat = next((c for c in load_categories() if c.get("id") == cat_id), None)
             if not cat:
-                QTimer.singleShot(0, lambda: self._set_status("分类无效"))
+                self._placeholder_done.emit("status", "分类无效")
                 return
 
             remote_names = {p.get("name")
@@ -864,11 +955,7 @@ class MainWindow(QMainWindow):
             new_plugins = remote_names - local_names
 
             if not new_plugins:
-                QTimer.singleShot(0, lambda: QMessageBox.information(
-                    self, "暂无新模块",
-                    "目前没有新的功能模块上线，敬请期待后续更新 📅"
-                ))
-                QTimer.singleShot(0, lambda: self._set_status("无新模块"))
+                self._placeholder_done.emit("none", None)
                 return
 
             # 筛选属于当前分类的新插件
@@ -878,21 +965,34 @@ class MainWindow(QMainWindow):
                          and p.get("name") in new_plugins]
 
             if not available:
-                QTimer.singleShot(0, lambda: QMessageBox.information(
-                    self, "暂无新模块",
-                    "当前分类暂无新模块，请关注其他分类的更新 📅"
-                ))
-                QTimer.singleShot(0, lambda: self._set_status("无新模块"))
+                self._placeholder_done.emit("none_cat", None)
                 return
 
-            # 有可用的新模块，逐一询问下载
-            for plugin in available:
-                pname = plugin.get("name", "")
-                display = plugin.get("display_name", pname)
-                QTimer.singleShot(0, lambda p=plugin, dn=display:
-                    self._prompt_new_module(p, dn))
+            # 有可用的新模块，交由主线程逐一询问下载
+            self._placeholder_done.emit("available", available)
 
         threading.Thread(target=_check, daemon=True).start()
+
+    def _on_placeholder_done(self, kind: str, payload):
+        """主线程：占位卡检查结果（信号驱动，安全更新 UI）。"""
+        if kind == "fail":
+            self._set_status("⚠️ 网络不可达，无法检查新模块")
+        elif kind == "status":
+            self._set_status(str(payload))
+        elif kind == "none":
+            QMessageBox.information(
+                self, "暂无新模块",
+                "目前没有新的功能模块上线，敬请期待后续更新 📅")
+            self._set_status("无新模块")
+        elif kind == "none_cat":
+            QMessageBox.information(
+                self, "暂无新模块",
+                "当前分类暂无新模块，请关注其他分类的更新 📅")
+            self._set_status("无新模块")
+        elif kind == "available":
+            for plugin in payload:
+                display = plugin.get("display_name", plugin.get("name", ""))
+                self._prompt_new_module(plugin, display)
 
     def _prompt_new_module(self, plugin_info: dict, display_name: str):
         """提示用户下载新模块。"""
@@ -912,98 +1012,44 @@ class MainWindow(QMainWindow):
         url = plugin_info.get("download_url", "")
         version = plugin_info.get("version", "1.0.0")
 
-        progress_dlg = ProgressDialog(display_name, self)
-        progress_dlg.show()
+        self._module_progress_dlg = ProgressDialog(display_name, self)
+        self._module_progress_dlg.show()
 
         def _download():
             ok = self._plugin_updater.download_plugin(
                 pname, url,
-                progress_callback=lambda d, t, dlg=progress_dlg: dlg.progress_changed.emit(d, t),
+                progress_callback=lambda d, t:
+                    self._module_progress_dlg.progress_changed.emit(d, t),
             )
             if ok:
                 self._plugin_updater.set_local_version(pname, version)
                 # 更新本地注册表
                 self._plugins_map[pname] = plugin_info
-                # 刷新界面
-                QTimer.singleShot(0, progress_dlg.close)
-                QTimer.singleShot(0, self._finish_refresh)
-                QTimer.singleShot(0, lambda: self._set_status(
-                    f"✅ 新模块已安装: {display_name}"))
-                QTimer.singleShot(0, lambda: QMessageBox.information(
-                    self, "安装完成",
-                    f"「{display_name}」已安装成功 ✅\n\n"
-                    f"现在可以在对应分类中找到它并点击[启动]使用。"
-                ))
-            else:
-                QTimer.singleShot(0, progress_dlg.close)
-                QTimer.singleShot(0, lambda: QMessageBox.warning(
-                    self, "下载失败",
-                    f"下载「{display_name}」失败，请检查网络后重试。"
-                ))
+            # 切回主线程统一处理 UI（子线程不能安全操作界面）
+            self._module_install_done.emit(ok, display_name)
 
         threading.Thread(target=_download, daemon=True).start()
 
-
-    def _download_and_launch(self, plugin_info: dict, update_info: dict):
-        """下载更新（带进度）→ 完成后加载插件。"""
-        pname = plugin_info.get("name", "")
-        url = update_info.get("download_url", "")
-
-        self._progress_dlg = ProgressDialog(
-            plugin_info.get("display_name", pname), self
-        )
-        self._progress_dlg.show()
-
-        def _download():
-            ok = self._plugin_updater.download_plugin(
-                pname, url,
-                progress_callback=lambda d, t, dlg=self._progress_dlg: dlg.progress_changed.emit(d, t),
-            )
-            if ok:
-                self._plugin_updater.set_local_version(
-                    pname, update_info.get("remote_version", "0.0.0")
-                )
-                self._plugins_map[pname]["version"] = update_info.get("remote_version", "0.0.0")
-            # 切回主线程：关闭进度窗 + 启动插件（带成功/失败标记）
-            tag = "__dl_ok__" if ok else "__dl_fail__"
-            self._launch_ready.emit(f"{tag}:{pname}")
-
-        thread = threading.Thread(target=_download, daemon=True)
-        thread.start()
+    def _on_module_install_done(self, ok: bool, display_name: str):
+        """主线程：新模块安装完成。"""
+        if self._module_progress_dlg:
+            self._module_progress_dlg.close()
+            self._module_progress_dlg = None
+        if ok:
+            self._finish_refresh()
+            self._set_status(f"✅ 新模块已安装: {display_name}")
+            QMessageBox.information(
+                self, "安装完成",
+                f"「{display_name}」已安装成功 ✅\n\n"
+                f"现在可以在对应分类中找到它并点击[启动]使用。")
+        else:
+            self._set_status(f"⚠️ 下载「{display_name}」失败，请检查网络后重试")
+            QMessageBox.warning(
+                self, "下载失败",
+                f"下载「{display_name}」失败，请检查网络后重试。")
 
     def _do_launch(self, plugin_name: str):
-        """加载插件 .pyd 并打开独立窗口（由信号触发，主线程执行）。"""
-        # ── 有更新：弹窗让用户选择 ──
-        if plugin_name == "__update_prompt__":
-            if self._upgrade_info:
-                pinfo, uinfo = self._upgrade_info
-                self._upgrade_info = None
-                pname = pinfo["name"]
-                self._reset_card_loading()  # 先停下进度条，再弹窗
-                dlg = UpdateDialog(pinfo, uinfo, self)
-                if dlg.exec() != QDialog.Accepted:
-                    self._do_launch(pname)
-                    return
-                # 用户点更新 → 后台下载，完成后刷新版本再启动
-                self._progress_dlg = ProgressDialog(
-                    pinfo.get("display_name", pname), self
-                )
-                self._progress_dlg.show()
-                def _dl():
-                    ok = self._plugin_updater.download_plugin(
-                        pname, uinfo["download_url"],
-                        progress_callback=lambda d, t, dlg=self._progress_dlg: dlg.progress_changed.emit(d, t),
-                    )
-                    if ok:
-                        self._plugin_updater.set_local_version(
-                            pname, uinfo["remote_version"]
-                        )
-                        self._just_updated = True
-                    self._launch_ready.emit(pname)
-                threading.Thread(target=_dl, daemon=True).start()
-            return
-
-        # ── 正常加载插件 ──
+        """加载插件 .pyd 并打开独立窗口（主线程执行，纯本地操作）。"""
         # 关掉可能还在的下载进度窗
         if self._progress_dlg:
             self._progress_dlg.close()
@@ -1027,10 +1073,6 @@ class MainWindow(QMainWindow):
                 self._loaded_plugin_windows[plugin_name] = []
             self._loaded_plugin_windows[plugin_name].append(widget)
             self._set_status(f"已启动: {display}")
-            # 如果刚完成更新，刷新版本显示
-            if self._just_updated:
-                self._just_updated = False
-                self._finish_refresh()
         except Exception as exc:
             logger.error("Launch plugin '%s' failed: %s", plugin_name, exc,
                          exc_info=True)
@@ -1041,12 +1083,180 @@ class MainWindow(QMainWindow):
                 f"请确认 plugins/{plugin_name}.pyd 文件存在且版本正确。",
             )
 
-        # 不管成功失败，恢复卡片按钮
-        self._reset_card_loading()
-
 
     # ── 后台更新检查 ─────────────────────────────────────
 
+
+    # ── 更新 / 安装 ────────────────────────────────────────
+
+    @staticmethod
+    def _is_installed(pname: str) -> bool:
+        """本地是否已有该插件的 .pyd 或 .py。"""
+        return (os.path.exists(os.path.join(PLUGINS_DIR, f"{pname}.pyd"))
+                or os.path.exists(os.path.join(PLUGINS_DIR, f"{pname}.py")))
+
+    def _on_update_clicked(self, plugin_info: dict):
+        """点击卡片「更新/安装」→ 检查 → 确认框 → 下载 → 刷新状态。"""
+        pname = plugin_info.get("name", "")
+        display = plugin_info.get("display_name", pname)
+        self._set_status(f"正在检查 {display} 是否有新版本 ...")
+
+        # 按钮禁用防连点（结果回来时 set_update_state 恢复）
+        for card in self._grid_page.findChildren(ToolCard):
+            if card._info.get("name") == pname:
+                card._update_btn.setEnabled(False)
+
+        def _check():
+            # 显式点击 → 强制真实请求（绕过 TTL 缓存）
+            manifest = self._plugin_updater.fetch_remote_manifest(force=True)
+            if manifest is None:
+                self._network_result.emit("gh", False)  # 回写灯红
+                self._update_finished.emit(
+                    pname, ToolCard.STATE_UNKNOWN, False, False)
+                return
+            self._network_result.emit("gh", True)
+            update_info = self._plugin_updater.check_plugin_update(
+                pname, manifest)
+            if update_info is None:
+                self._update_finished.emit(
+                    pname, ToolCard.STATE_UP_TO_DATE, False, False)
+                return
+            self._update_proceed.emit(plugin_info, update_info)
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _on_update_proceed(self, plugin_info: dict, update_info: dict):
+        """主线程：弹确认框；确认后下载。"""
+        pname = update_info.get("name", "")
+        display = plugin_info.get("display_name", pname)
+
+        dlg = UpdateDialog(plugin_info, update_info, self)
+        if dlg.exec() != QDialog.Accepted:
+            # 取消：恢复「有更新 / 可安装」状态
+            state = (ToolCard.STATE_NOT_INSTALLED
+                     if not self._is_installed(pname)
+                     else ToolCard.STATE_HAS_UPDATE)
+            self._update_finished.emit(pname, state, False, False)
+            return
+
+        # 确认 → 下载
+        self._progress_dlg = ProgressDialog(display, self)
+        self._progress_dlg.show()
+        remote_ver = update_info.get("remote_version", "0.0.0")
+
+        def _dl():
+            was_installed = self._is_installed(pname)  # 下载前是否已装
+            ok = self._plugin_updater.download_plugin(
+                pname, update_info["download_url"],
+                progress_callback=lambda d, t, dlg=self._progress_dlg:
+                    dlg.progress_changed.emit(d, t),
+            )
+            if ok:
+                self._plugin_updater.set_local_version(pname, remote_ver)
+                self._plugins_map[pname]["version"] = remote_ver
+                state = ToolCard.STATE_UP_TO_DATE
+            else:
+                state = (ToolCard.STATE_NOT_INSTALLED
+                         if not was_installed
+                         else ToolCard.STATE_HAS_UPDATE)
+            self._update_finished.emit(pname, state, ok, was_installed)
+
+        threading.Thread(target=_dl, daemon=True).start()
+
+    def _on_update_finished(self, pname: str, state: str, downloaded: bool,
+                            was_installed: bool):
+        """主线程：更新按钮状态 + 状态栏提示。"""
+        if self._progress_dlg:
+            self._progress_dlg.close()
+            self._progress_dlg = None
+
+        display = self._plugins_map.get(pname, {}).get("display_name", pname)
+        self._update_states[pname] = state
+        for card in self._grid_page.findChildren(ToolCard):
+            if card._info.get("name") == pname:
+                card.set_update_state(state)
+
+        if downloaded:
+            self._finish_refresh()  # 重建列表与当前分类卡片（从磁盘重载新版本号）
+            new_ver = self._plugins_map.get(pname, {}).get("version", "?")
+            if was_installed:
+                self._set_status(
+                    f"{display} 已更新到 v{new_ver}，重新启动插件生效")
+            else:
+                self._set_status(f"✅ {display} 已安装 v{new_ver}，点击启动使用")
+        elif state == ToolCard.STATE_UP_TO_DATE:
+            self._set_status(f"{display} 已是最新版本")
+        elif state == ToolCard.STATE_UNKNOWN:
+            self._set_status(f"⚠️ 网络不可达，无法检查 {display} 更新")
+        elif state == ToolCard.STATE_NOT_INSTALLED:
+            self._set_status(f"⚠️ {display} 下载失败，请检查网络后重试")
+        elif state == ToolCard.STATE_HAS_UPDATE:
+            self._set_status(f"{display} 有新版本可更新")
+
+    # ── 全量更新状态检测 ───────────────────────────────────
+
+    def _on_check_updates_clicked(self):
+        """手动触发全量重查各插件更新状态（强制真实请求，不走缓存）。"""
+        if self._update_checking:
+            return
+        self._check_updates_btn.setText("⏳ 检查中...")
+        self._set_status("正在检查各插件更新状态 ...")
+        self._check_all_updates(force=True)
+
+    def _check_all_updates(self, force: bool = False):
+        """后台全量检测各插件更新状态（启动自动 + 手动按钮共用）。
+
+        Args:
+            force: True 时强制真实请求（手动刷新），False 走 TTL 缓存（启动自动）。
+        """
+        if self._update_checking:
+            return
+        self._update_checking = True
+        if self._check_updates_btn:
+            self._check_updates_btn.setEnabled(False)
+
+        def _check():
+            states: dict[str, str] = {}
+            manifest = self._plugin_updater.fetch_remote_manifest(force=force)
+            if manifest:
+                for name in self._plugins_map:
+                    try:
+                        if self._is_installed(name):
+                            uinfo = self._plugin_updater.check_plugin_update(
+                                name, manifest)
+                            states[name] = (ToolCard.STATE_HAS_UPDATE if uinfo
+                                            else ToolCard.STATE_UP_TO_DATE)
+                        else:
+                            states[name] = ToolCard.STATE_NOT_INSTALLED
+                    except Exception:
+                        states[name] = ToolCard.STATE_UNKNOWN
+                self._network_result.emit("gh", True)  # 回写灯绿
+            self._updates_ready.emit(states, manifest is not None)
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _on_updates_ready(self, states: dict, ok: bool):
+        """主线程：应用全量检测结果到所有卡片。"""
+        self._update_checking = False
+        if self._check_updates_btn:
+            self._check_updates_btn.setText("🔄 刷新更新状态")
+            self._check_updates_btn.setEnabled(True)
+
+        if not ok:
+            # 网络不可达：全部置 unknown（可点重查）
+            self._set_status("⚠️ 网络不可达，无法检查更新")
+            self._update_states = {name: ToolCard.STATE_UNKNOWN
+                                   for name in self._plugins_map}
+            self._apply_all_card_states()
+            return
+
+        self._update_states = states
+        self._apply_all_card_states()
+        n_upd = sum(1 for s in states.values()
+                    if s == ToolCard.STATE_HAS_UPDATE)
+        self._set_status(
+            f"检查完成：{n_upd} 个插件有更新" if n_upd
+            else "检查完成：全部已是最新")
 
     # ── 刷新与更新 ──────────────────────────────────────────
 
@@ -1057,13 +1267,15 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         def _sync():
-            self._sync_from_github()
+            ok = self._sync_from_github()
+            # 同步成功与否都回写灯（以真实请求为准）
+            self._network_result.emit("gh", ok)
             self._refresh_done.emit()
 
         threading.Thread(target=_sync, daemon=True).start()
 
-    def _sync_from_github(self):
-        """从 GitHub 拉取配置（后台线程执行）。"""
+    def _sync_from_github(self) -> bool:
+        """从 GitHub 拉取配置（后台线程执行），返回 raw 域是否可达。"""
         remote_cat = _fetch_remote_json(CATEGORIES_URL)
         if remote_cat and "categories" in remote_cat:
             try:
@@ -1091,6 +1303,7 @@ class MainWindow(QMainWindow):
                     f.write("\n")
             except Exception:
                 pass
+        return remote_cat is not None or remote_plg is not None
 
     def _finish_refresh(self):
         """刷新完成，更新界面（主线程）。"""
@@ -1118,8 +1331,12 @@ class MainWindow(QMainWindow):
     # ── 网络状态检测 ──────────────────────────────────────
 
     @staticmethod
-    def _url_reachable(url: str, timeout: int = 2) -> bool:
-        """检测 URL 是否可达（轻量 GET，只读一小段）。"""
+    def _url_reachable(url: str, timeout: int = 10) -> bool:
+        """检测 URL 是否可达（轻量 GET，只读一小段）。
+
+        超时设 10s：检测在后台线程跑、结果存内存，慢不阻塞任何操作；
+        太短（2s）会在网络波动时误报红灯。
+        """
         try:
             req = urllib.request.Request(
                 url,
@@ -1137,32 +1354,52 @@ class MainWindow(QMainWindow):
         dot.setStyleSheet(f"color: {color}; font-size: 16px; background: transparent;")
 
     def _on_network_result(self, target: str, ok: bool):
-        """网络检测结果回调（主线程执行）。"""
-        if target == "gh":
-            self._set_dot_color(self._dot_gh, ok)
-        elif target == "dl":
-            self._set_dot_color(self._dot_dl, ok)
-            self._download_ok = ok
-            if not ok:
-                self._set_status("⚠️ 下载不可达，无法更新插件")
+        """网络检测结果回调（主线程执行）。
+
+        灯是纯展示，不拦截任何操作；真实请求成功/失败也会回写灯色。
+        """
+        self._net[target] = ok
+        dot = self._dot_gh if target == "gh" else self._dot_dl
+        self._set_dot_color(dot, ok)
+        if target == "dl" and not ok:
+            self._set_status("⚠️ 下载不可达，无法更新插件")
+        # gh + dl 都有结果 → 本次检测完成，恢复刷新按钮
+        if self._net.get("gh") is not None and self._net.get("dl") is not None:
+            self._net_checking = False
+            if self._refresh_net_btn:
+                self._refresh_net_btn.setEnabled(True)
         logger.info("Network check — %s: %s", target, "OK" if ok else "FAIL")
 
     def _check_network_status_raw(self):
-        """并行检测 GitHub 连通性（通过 Signal 安全切回主线程）。"""
+        """并行检测 gh/dl 连通性（后台线程，纯展示用途）。"""
+        if self._net_checking:
+            return  # 检测进行中，忽略重复触发
+        self._net_checking = True
+        self._net = {"gh": None, "dl": None}  # 重置，等两个结果回来才记为完成
+        if self._refresh_net_btn:
+            self._refresh_net_btn.setEnabled(False)
+
         def _check_gh():
             # 用跟更新检测相同的 URL + User-Agent，结果才可靠
-            url = VERSION_URL + "?_=1"
-            ok = self._url_reachable(url)
+            ok = self._url_reachable(VERSION_URL + "?_=1", timeout=10)
             self._network_result.emit("gh", ok)
 
         def _check_dl():
+            # dl 灯 = github.com 域可达（下载第一跳就在这个域）
             ok = self._url_reachable(
-                "https://github.com/LegendaryScriptGenew/tools_box/releases"
-            )
+                "https://github.com/LegendaryScriptGenew/tools_box/releases",
+                timeout=10)
             self._network_result.emit("dl", ok)
 
         threading.Thread(target=_check_gh, daemon=True).start()
         threading.Thread(target=_check_dl, daemon=True).start()
+
+    def _on_net_refresh_clicked(self):
+        """手动重测网络（gh + dl 两灯）。"""
+        if self._net_checking:
+            return
+        self._set_status("正在检测网络 ...")
+        self._check_network_status_raw()
 
 
     # ── 关闭 ────────────────────────────────────────────────
