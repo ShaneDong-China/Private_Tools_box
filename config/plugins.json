@@ -132,7 +132,7 @@
       "name": "network_ipv4_calculator_sub",
       "display_name": "IPv4掩码计算器",
       "display_name_en": "IPv4 Calculator",
-      "version": "1.0.0",
+      "version": "1.0.4",
       "class_name": "IPv4Plugin",
       "icon": "🌐",
       "description": "IPv4 地址计算、子网划分、掩码转换",
